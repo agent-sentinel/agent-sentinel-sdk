@@ -1,0 +1,46 @@
+# Agent Sentinel Policy Configuration
+# 
+# This file defines budget limits and action controls for your agent.
+# Place this file in one of these locations:
+#   1. ./callguard.yaml (current directory)
+#   2. ./.agent-sentinel/callguard.yaml
+#   3. $AGENT_SENTINEL_HOME/callguard.yaml
+
+# Budget limits (in USD)
+budgets:
+  # Maximum spend for entire session (application lifetime)
+  # Set to null for unlimited
+  session: 5.0
+  
+  # Maximum spend for current run (reset between agent executions)
+  # Set to null for unlimited
+  run: 1.0
+  
+  # Per-action budget limits
+  # Once an action hits its limit across all calls, it will be blocked
+  actions:
+    expensive_llm_call: 0.50
+    search_web: 0.20
+    send_email: 0.10
+
+# Action control lists
+
+# Denied actions: These actions are completely blocked
+denied_actions:
+  - delete_database
+  - format_hard_drive
+  - send_money
+  - dangerous_operation
+
+# Allowed actions: If this list is present, ONLY these actions are permitted
+# Comment out or remove to disable allowlist mode
+# allowed_actions:
+#   - search_web
+#   - read_file
+#   - calculator_tool
+#   - safe_operation
+
+# Strict mode: If true, any policy violation stops execution
+# If false, violations are logged as warnings but execution continues
+strict_mode: true
+

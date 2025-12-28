@@ -1,0 +1,11 @@
+include LICENSE
+include README.md
+include CHANGELOG.md
+include pyproject.toml
+recursive-include agent_sentinel *.py
+recursive-include agent_sentinel *.typed
+recursive-include tests *.py
+exclude agent_sentinel.egg-info/*
+global-exclude __pycache__
+global-exclude *.py[co]
+global-exclude .DS_Store
