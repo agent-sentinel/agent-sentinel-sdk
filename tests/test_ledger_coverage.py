@@ -169,6 +169,18 @@ class TestLedgerSetup:
 class TestLedgerWriteOperations:
     """Test ledger write and record operations."""
 
+    def setup_method(self, method):
+        """Set a mock run_id for each test."""
+        from agent_sentinel.cost import CostTracker
+        self.test_run_id = str(uuid.uuid4())
+        setattr(CostTracker, "_current_run_id", self.test_run_id)
+
+    def teardown_method(self, method):
+        """Clean up the mocked attribute."""
+        from agent_sentinel.cost import CostTracker
+        if hasattr(CostTracker, "_current_run_id"):
+            delattr(CostTracker, "_current_run_id")
+
     def test_record_simple_action(self, tmp_path, monkeypatch) -> None:
         """Test recording a simple action to ledger."""
         monkeypatch.chdir(tmp_path)
@@ -304,9 +316,53 @@ class TestLedgerWriteOperations:
         
         assert entry["duration_ms"] == 123.457
 
+    def test_record_with_run_id(self, tmp_path, monkeypatch) -> None:
+        """Test that run_id is recorded if set on CostTracker."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("AGENT_SENTINEL_HOME", raising=False)
+        
+        Ledger.reset()
+        
+        # Mock the run_id on CostTracker
+        from agent_sentinel.cost import CostTracker
+        test_run_id = str(uuid.uuid4())
+        monkeypatch.setattr(CostTracker, "_current_run_id", test_run_id)
+
+        Ledger.record(
+            action="action_with_run_id",
+            inputs={},
+            outputs={},
+            cost_usd=0.01,
+            duration_ms=100.0,
+            outcome="success",
+            tags=[],
+        )
+        
+        log_path = Ledger.get_log_path()
+        with open(log_path, "r") as f:
+            entry = json.loads(f.readline())
+            
+        assert "run_id" in entry
+        assert entry["run_id"] == test_run_id
+        
+        # Clean up the mocked attribute
+        monkeypatch.delattr(CostTracker, "_current_run_id", raising=False)
+
 
 class TestLedgerFailOpen:
     """Test fail-open behavior when ledger operations fail."""
+
+    def setup_method(self, method):
+        """Set a mock run_id for each test."""
+        from agent_sentinel.cost import CostTracker
+        self.test_run_id = str(uuid.uuid4())
+        setattr(CostTracker, "_current_run_id", self.test_run_id)
+
+    def teardown_method(self, method):
+        """Clean up the mocked attribute."""
+        from agent_sentinel.cost import CostTracker
+        if hasattr(CostTracker, "_current_run_id"):
+            delattr(CostTracker, "_current_run_id")
 
     def test_record_disabled_ledger(self, tmp_path, monkeypatch) -> None:
         """Test that record() handles disabled ledger gracefully."""
@@ -353,6 +409,18 @@ class TestLedgerFailOpen:
 
 class TestLedgerRotation:
     """Test ledger rotation and archival scenarios."""
+
+    def setup_method(self, method):
+        """Set a mock run_id for each test."""
+        from agent_sentinel.cost import CostTracker
+        self.test_run_id = str(uuid.uuid4())
+        setattr(CostTracker, "_current_run_id", self.test_run_id)
+
+    def teardown_method(self, method):
+        """Clean up the mocked attribute."""
+        from agent_sentinel.cost import CostTracker
+        if hasattr(CostTracker, "_current_run_id"):
+            delattr(CostTracker, "_current_run_id")
 
     def test_ledger_with_size_threshold(self, tmp_path, monkeypatch) -> None:
         """Test reading ledger that grows to significant size."""

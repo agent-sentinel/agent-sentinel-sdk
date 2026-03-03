@@ -32,6 +32,7 @@ logger = logging.getLogger("agent_sentinel")
 class ReplayEntry:
     """A single recorded action from the ledger."""
     id: str
+    run_id: str | None
     action: str
     inputs: Dict[str, Any]
     outputs: Any
@@ -170,13 +171,9 @@ class ReplayMode:
         """
         Load entries from ledger file, optionally filtering by run_id.
         
-        Note: Since Phase 1-3 don't include run_id in ledger entries,
-        this implementation loads all entries. In Phase 4, we recommend
-        adding run_id to ledger entries for better replay filtering.
-        
         Args:
             ledger_path: Path to ledger file
-            run_id: Optional run ID to filter by (currently not used in ledger format)
+            run_id: Optional run ID to filter by
             
         Returns:
             List of ReplayEntry objects
@@ -192,6 +189,10 @@ class ReplayMode:
                 try:
                     data = json.loads(line)
                     
+                    # If filtering by run_id, check if entry matches
+                    if run_id and data.get("run_id") != run_id:
+                        continue
+
                     # Extract inputs and outputs from payload
                     payload = data.get("payload", {})
                     inputs = payload.get("inputs", {})
@@ -199,6 +200,7 @@ class ReplayMode:
                     
                     entry = ReplayEntry(
                         id=data.get("id", ""),
+                        run_id=data.get("run_id"),
                         action=data.get("action", ""),
                         inputs=inputs,
                         outputs=outputs,
@@ -209,9 +211,6 @@ class ReplayMode:
                         tags=data.get("tags", []),
                     )
                     
-                    # If filtering by run_id, check if entry matches
-                    # For now, we load all entries since run_id isn't in the ledger
-                    # TODO: Add run_id to ledger entries in future update
                     entries.append(entry)
                     
                 except json.JSONDecodeError as e:
