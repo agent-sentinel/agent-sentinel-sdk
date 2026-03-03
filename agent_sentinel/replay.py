@@ -169,7 +169,7 @@ class ReplayMode:
     def _normalize_tags(tags: Any) -> List[str]:
         """Normalize tags from ledger JSON into a stable list[str]."""
         if isinstance(tags, list):
-            return [tag for tag in tags if isinstance(tag, str)]
+            return [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
 
         if isinstance(tags, str):
             return [tag.strip() for tag in tags.split(",") if tag.strip()]
