@@ -19,6 +19,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .cost import CostTracker
+
 # Constants
 # By default, we write to a hidden folder in the user's current directory.
 # This makes it easy to find logs: just look in .agent-sentinel/
@@ -169,6 +171,7 @@ class Ledger:
         # Build the ledger entry with all metadata
         entry = {
             "id": str(uuid.uuid4()),
+            "run_id": CostTracker._current_run_id,
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "action": action,
             "cost_usd": cost_usd,
