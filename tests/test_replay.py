@@ -28,6 +28,7 @@ class TestReplayEntry:
         """Test that ReplayEntry can be created with all fields."""
         entry = ReplayEntry(
             id="test-id",
+            run_id=None,
             action="test_action",
             inputs={"args": (), "kwargs": {"x": 1}},
             outputs={"result": 42},
@@ -57,6 +58,7 @@ class TestReplayModeBasics:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="action1",
                 inputs={"args": (), "kwargs": {}},
                 outputs="result1",
@@ -81,6 +83,7 @@ class TestReplayModeBasics:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="action1",
                 inputs={"args": (), "kwargs": {}},
                 outputs="result1",
@@ -108,6 +111,7 @@ class TestReplayModeBasics:
         entries = [
             ReplayEntry(
                 id=str(i),
+                run_id=None,
                 action=f"action{i}",
                 inputs={"args": (), "kwargs": {}},
                 outputs=f"result{i}",
@@ -138,6 +142,7 @@ class TestReplayModeBasics:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="action1",
                 inputs={"args": (), "kwargs": {}},
                 outputs="result1",
@@ -167,6 +172,7 @@ class TestReplayModeOutputRetrieval:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="test_action",
                 inputs={"args": (), "kwargs": {"x": 1}},
                 outputs="success_result",
@@ -193,6 +199,7 @@ class TestReplayModeOutputRetrieval:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="expected_action",
                 inputs={"args": (), "kwargs": {}},
                 outputs="result",
@@ -218,6 +225,7 @@ class TestReplayModeOutputRetrieval:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="expected_action",
                 inputs={"args": (), "kwargs": {}},
                 outputs="result",
@@ -245,6 +253,7 @@ class TestReplayModeOutputRetrieval:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="test_action",
                 inputs={"args": (), "kwargs": {"x": 1}},
                 outputs="result",
@@ -271,6 +280,7 @@ class TestReplayModeOutputRetrieval:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="test_action",
                 inputs={"args": (), "kwargs": {"x": 1}},
                 outputs="result",
@@ -299,6 +309,7 @@ class TestReplayModeOutputRetrieval:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="test_action",
                 inputs={"args": (), "kwargs": {}},
                 outputs="result",
@@ -480,6 +491,34 @@ class TestReplayModeFromLedger:
             assert len(entries) == 2
         finally:
             ledger_path.unlink()
+
+    def test_load_entries_normalizes_non_list_tags(self):
+        """Test that tags are normalized to list[str] when malformed in payload."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+            ledger_path = Path(f.name)
+
+            entry = {
+                "id": "entry-1",
+                "timestamp": "2025-01-01T00:00:00Z",
+                "action": "action1",
+                "cost_usd": 0.01,
+                "duration_ms": 100.0,
+                "outcome": "success",
+                "tags": "alpha, beta",
+                "payload": {
+                    "inputs": {"args": (), "kwargs": {}},
+                    "outputs": "result1"
+                }
+            }
+
+            f.write(json.dumps(entry) + "\n")
+
+        try:
+            entries = ReplayMode._load_entries(ledger_path, run_id=None)
+            assert len(entries) == 1
+            assert entries[0].tags == ["alpha", "beta"]
+        finally:
+            ledger_path.unlink()
     
     def test_from_ledger_file(self):
         """Test creating ReplayMode from ledger file."""
@@ -525,6 +564,39 @@ class TestReplayModeFromLedger:
                 ReplayMode.from_ledger_file(ledger_path)
             
             assert "No entries found" in str(exc_info.value)
+        finally:
+            ledger_path.unlink()
+
+    def test_load_entries_filters_by_run_id(self):
+        """Test that entries are filtered by run_id."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+            ledger_path = Path(f.name)
+            
+            entry1 = {"id": "1", "run_id": "run-1", "action": "action1", "payload": {}}
+            entry2 = {"id": "2", "run_id": "run-2", "action": "action2", "payload": {}}
+            entry3 = {"id": "3", "run_id": "run-1", "action": "action3", "payload": {}}
+            
+            f.write(json.dumps(entry1) + "\n")
+            f.write(json.dumps(entry2) + "\n")
+            f.write(json.dumps(entry3) + "\n")
+        
+        try:
+            # Load entries for run-1
+            entries = ReplayMode._load_entries(ledger_path, run_id="run-1")
+            
+            assert len(entries) == 2
+            assert entries[0].id == "1"
+            assert entries[1].id == "3"
+            
+            # Load entries for run-2
+            entries = ReplayMode._load_entries(ledger_path, run_id="run-2")
+            assert len(entries) == 1
+            assert entries[0].id == "2"
+
+            # Load with no run_id (should load all)
+            entries = ReplayMode._load_entries(ledger_path, run_id=None)
+            assert len(entries) == 3
+
         finally:
             ledger_path.unlink()
 
@@ -658,6 +730,7 @@ class TestReplayModeDivergenceTracking:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="action1",
                 inputs={"args": (), "kwargs": {"x": 1}},
                 outputs="result1",
@@ -684,6 +757,7 @@ class TestReplayModeDivergenceTracking:
         entries = [
             ReplayEntry(
                 id="1",
+                run_id=None,
                 action="action1",
                 inputs={"args": (), "kwargs": {}},
                 outputs="result1",
@@ -695,6 +769,7 @@ class TestReplayModeDivergenceTracking:
             ),
             ReplayEntry(
                 id="2",
+                run_id=None,
                 action="action2",
                 inputs={"args": (), "kwargs": {}},
                 outputs="result2",
@@ -758,4 +833,3 @@ class TestReplayModeAsync:
                 assert result == "async_replayed"
         finally:
             ledger_path.unlink()
-

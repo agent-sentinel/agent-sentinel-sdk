@@ -19,6 +19,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .cost import CostTracker
+
 # Constants
 # By default, we write to a hidden folder in the user's current directory.
 # This makes it easy to find logs: just look in .agent-sentinel/
@@ -124,6 +126,15 @@ class Ledger:
                 cls._log_path = None  # Disable writing
 
     @classmethod
+    def _normalize_tags(cls, tags: Any) -> list[str]:
+        """Normalize tags to a stable list[str] for downstream consumers."""
+        if isinstance(tags, list):
+            return [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
+        if isinstance(tags, str):
+            return [tag.strip() for tag in tags.split(",") if tag.strip()]
+        return []
+
+    @classmethod
     def record(
         cls, 
         action: str, 
@@ -169,12 +180,13 @@ class Ledger:
         # Build the ledger entry with all metadata
         entry = {
             "id": str(uuid.uuid4()),
+            "run_id": CostTracker._current_run_id,
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "action": action,
             "cost_usd": cost_usd,
             "duration_ms": round(duration_ms, 3),
             "outcome": outcome,
-            "tags": tags,
+            "tags": cls._normalize_tags(tags),
             # We nest inputs/outputs to keep top-level schema clean
             "payload": {
                 "inputs": inputs,
