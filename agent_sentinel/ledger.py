@@ -126,6 +126,15 @@ class Ledger:
                 cls._log_path = None  # Disable writing
 
     @classmethod
+    def _normalize_tags(cls, tags: Any) -> list[str]:
+        """Normalize tags to a stable list[str] for downstream consumers."""
+        if isinstance(tags, list):
+            return [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
+        if isinstance(tags, str):
+            return [tag.strip() for tag in tags.split(",") if tag.strip()]
+        return []
+
+    @classmethod
     def record(
         cls, 
         action: str, 
@@ -177,7 +186,7 @@ class Ledger:
             "cost_usd": cost_usd,
             "duration_ms": round(duration_ms, 3),
             "outcome": outcome,
-            "tags": tags,
+            "tags": cls._normalize_tags(tags),
             # We nest inputs/outputs to keep top-level schema clean
             "payload": {
                 "inputs": inputs,

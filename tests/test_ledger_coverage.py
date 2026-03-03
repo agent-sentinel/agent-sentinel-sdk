@@ -348,6 +348,29 @@ class TestLedgerWriteOperations:
         # Clean up the mocked attribute
         monkeypatch.delattr(CostTracker, "_current_run_id", raising=False)
 
+    def test_record_normalizes_malformed_tags(self, tmp_path, monkeypatch) -> None:
+        """Test malformed tags are normalized to list[str]."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("AGENT_SENTINEL_HOME", raising=False)
+
+        Ledger.reset()
+
+        Ledger.record(
+            action="action_with_malformed_tags",
+            inputs={},
+            outputs={},
+            cost_usd=0.01,
+            duration_ms=10.0,
+            outcome="success",
+            tags="alpha, beta, , gamma",  # type: ignore[arg-type]
+        )
+
+        log_path = Ledger.get_log_path()
+        with open(log_path, "r") as f:
+            entry = json.loads(f.readline())
+
+        assert entry["tags"] == ["alpha", "beta", "gamma"]
+
 
 class TestLedgerFailOpen:
     """Test fail-open behavior when ledger operations fail."""
@@ -507,4 +530,3 @@ class TestLedgerRotation:
         assert len(entries) == 10
         for i, entry in enumerate(entries):
             assert entry["payload"]["inputs"]["id"] == i
-
