@@ -167,6 +167,17 @@ class ReplayMode:
         return cls(entries, strict=strict, warn_on_divergence=warn_on_divergence)
     
     @staticmethod
+    def _normalize_tags(tags: Any) -> List[str]:
+        """Normalize tags from ledger JSON into a stable list[str]."""
+        if isinstance(tags, list):
+            return [tag for tag in tags if isinstance(tag, str)]
+
+        if isinstance(tags, str):
+            return [tag.strip() for tag in tags.split(",") if tag.strip()]
+
+        return []
+
+    @staticmethod
     def _load_entries(ledger_path: Path, run_id: Optional[str]) -> List[ReplayEntry]:
         """
         Load entries from ledger file, optionally filtering by run_id.
@@ -208,7 +219,7 @@ class ReplayMode:
                         duration_ms=data.get("duration_ms", 0.0),
                         outcome=data.get("outcome", ""),
                         timestamp=data.get("timestamp", ""),
-                        tags=data.get("tags", []),
+                        tags=ReplayMode._normalize_tags(data.get("tags")),
                     )
                     
                     entries.append(entry)
@@ -422,4 +433,3 @@ def replay_mode(
     
     with replay:
         yield replay
-

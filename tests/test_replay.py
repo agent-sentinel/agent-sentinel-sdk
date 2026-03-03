@@ -491,6 +491,34 @@ class TestReplayModeFromLedger:
             assert len(entries) == 2
         finally:
             ledger_path.unlink()
+
+    def test_load_entries_normalizes_non_list_tags(self):
+        """Test that tags are normalized to list[str] when malformed in payload."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+            ledger_path = Path(f.name)
+
+            entry = {
+                "id": "entry-1",
+                "timestamp": "2025-01-01T00:00:00Z",
+                "action": "action1",
+                "cost_usd": 0.01,
+                "duration_ms": 100.0,
+                "outcome": "success",
+                "tags": "alpha, beta",
+                "payload": {
+                    "inputs": {"args": (), "kwargs": {}},
+                    "outputs": "result1"
+                }
+            }
+
+            f.write(json.dumps(entry) + "\n")
+
+        try:
+            entries = ReplayMode._load_entries(ledger_path, run_id=None)
+            assert len(entries) == 1
+            assert entries[0].tags == ["alpha", "beta"]
+        finally:
+            ledger_path.unlink()
     
     def test_from_ledger_file(self):
         """Test creating ReplayMode from ledger file."""
@@ -805,4 +833,3 @@ class TestReplayModeAsync:
                 assert result == "async_replayed"
         finally:
             ledger_path.unlink()
-
