@@ -50,6 +50,23 @@ class TestReplayEntry:
         assert entry.tags == ["test"]
 
 
+class TestReplayTagNormalization:
+    """Test tag normalization from ledger entries."""
+
+    @pytest.mark.parametrize(
+        ("raw_tags", "expected"),
+        [
+            (["alpha", 1, "", None, "beta"], ["alpha", "", "beta"]),
+            ("alpha, beta, , gamma", ["alpha", "beta", "gamma"]),
+            (None, []),
+            ({"invalid": "type"}, []),
+        ],
+    )
+    def test_normalize_tags(self, raw_tags, expected):
+        """Replay mode should normalize mixed tag payloads into list[str]."""
+        assert ReplayMode._normalize_tags(raw_tags) == expected
+
+
 class TestReplayModeBasics:
     """Test basic ReplayMode functionality."""
     
