@@ -1,18 +1,25 @@
 """
-LangChain Integration for AgentSentinel.
+Robust LangChain Integration for AgentSentinel.
 
 This module provides a callback handler that automatically tracks LangChain
-chains, agents, and tool usage with cost tracking for LLM calls.
+chains, agents, and tool usage with cost tracking and active policy enforcement.
+
+Features:
+- Active Policy Enforcement: Blocks tools/LLMs if budget exceeded or policy violated
+- Intervention Recording: Tracks blocked/modified actions for dashboard visibility
+- Async Support: Fully compatible with async LangChain agents
+- Context Propagation: Maintains agent identity and budget across nested chains
 
 Usage:
     from langchain.chat_models import ChatOpenAI
     from langchain.agents import initialize_agent, Tool
     from agent_sentinel.integrations.langchain import SentinelCallbackHandler
     
-    # Create callback handler
+    # Create callback handler with policy enforcement
     sentinel_handler = SentinelCallbackHandler(
         run_name="my_agent_run",
-        track_costs=True
+        track_costs=True,
+        enforce_policies=True  # Enable active blocking
     )
     
     # Use with LangChain
@@ -30,6 +37,7 @@ Usage:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict, List, Optional, Sequence, Union
@@ -37,16 +45,25 @@ from uuid import UUID
 
 from ..cost import CostTracker
 from ..ledger import Ledger
-from ..errors import AgentSentinelError
+from ..policy import PolicyEngine
+from ..intervention import InterventionTracker, InterventionType, InterventionOutcome
+from ..errors import AgentSentinelError, BudgetExceededError, PolicyViolationError
 
+# Try new LangChain imports first (langchain-core), then fall back to old imports
 try:
-    from langchain.callbacks.base import BaseCallbackHandler
-    from langchain.schema import AgentAction, AgentFinish, LLMResult
+    from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.agents import AgentAction, AgentFinish
+    from langchain_core.outputs import LLMResult
     _LANGCHAIN_AVAILABLE = True
 except ImportError:
-    # Provide stub if LangChain not installed
-    BaseCallbackHandler = object  # type: ignore
-    _LANGCHAIN_AVAILABLE = False
+    try:
+        from langchain.callbacks.base import BaseCallbackHandler
+        from langchain.schema import AgentAction, AgentFinish, LLMResult
+        _LANGCHAIN_AVAILABLE = True
+    except ImportError:
+        # Provide stub if LangChain not installed
+        BaseCallbackHandler = object  # type: ignore
+        _LANGCHAIN_AVAILABLE = False
 
 try:
     from ..integrations.pricing import calculate_token_cost, normalize_model_name
@@ -63,7 +80,13 @@ logger = logging.getLogger("agent_sentinel.integrations.langchain")
 
 class SentinelCallbackHandler(BaseCallbackHandler):
     """
-    LangChain callback handler that integrates with AgentSentinel.
+    Active Sentinel Handler for LangChain.
+    
+    Features:
+    1. Authorization: Blocks tools/LLMs if budget exceeded or policy violated
+    2. Accounting: Tracks token costs and logs to Ledger
+    3. Audit: Records 'Interventions' when actions are blocked
+    4. Async Support: Works with both sync and async LangChain agents (LangChain handles async automatically)
     
     Automatically tracks:
     - LLM calls with token usage and costs
@@ -77,6 +100,7 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         track_costs: Whether to automatically track LLM costs (default True)
         track_tools: Whether to track tool/action calls (default True)
         auto_log: Whether to automatically log to ledger (default True)
+        enforce_policies: Enable active blocking based on policies (default True)
         tags: Optional tags to apply to all tracked actions
     """
     
@@ -86,6 +110,7 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         track_costs: bool = True,
         track_tools: bool = True,
         auto_log: bool = True,
+        enforce_policies: bool = True,
         tags: Optional[List[str]] = None,
     ):
         """Initialize the callback handler."""
@@ -100,6 +125,7 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         self.track_costs = track_costs
         self.track_tools = track_tools
         self.auto_log = auto_log
+        self.enforce_policies = enforce_policies
         self.tags = tags or ["langchain"]
         
         # Track call times and counts
@@ -110,8 +136,83 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         self._session_start = time.time()
         
         logger.info(
-            f"SentinelCallbackHandler initialized for run: {self.run_name}"
+            f"SentinelCallbackHandler initialized for run: {self.run_name} "
+            f"(policy enforcement: {self.enforce_policies})"
         )
+    
+    # =========================================================================
+    # 1. Active Policy Enforcement (The "Visa Check")
+    # =========================================================================
+    
+    def _enforce_policy(self, action_name: str, cost: float, metadata: Dict[str, Any]) -> None:
+        """
+        Helper to check policy and record interventions if blocked.
+        
+        This is the "pre-authorization" step - like a credit card terminal
+        checking funds before dispensing cash.
+        
+        For LLM calls where we don't know the exact cost yet, we check if we're
+        already at or over the budget limit.
+        
+        Args:
+            action_name: Name of the action to check
+            cost: Estimated cost of the action (may be 0 for unknown costs)
+            metadata: Additional context for the action
+        
+        Raises:
+            BudgetExceededError: If budget would be exceeded
+            PolicyViolationError: If action violates policy
+        """
+        if not self.enforce_policies:
+            return
+        
+        try:
+            # For LLM calls with unknown cost (cost=0), check if we're already over budget
+            # This prevents starting an LLM call when we have no budget left
+            if cost == 0.0 and action_name == "llm_call":
+                config = PolicyEngine.get_config()
+                if config and config.run_budget is not None:
+                    current_run = CostTracker.get_run_total()
+                    if current_run >= config.run_budget:
+                        raise BudgetExceededError(
+                            f"Run budget already exceeded: {current_run:.4f} >= {config.run_budget:.4f} USD. "
+                            f"Cannot start new LLM call.",
+                            spent=current_run,
+                            limit=config.run_budget,
+                            budget_type="run"
+                        )
+            
+            # The Authorization Step - check if action is allowed
+            PolicyEngine.check_action(action_name, cost)
+            
+        except (BudgetExceededError, PolicyViolationError) as e:
+            # The "Transaction Declined" Step
+            logger.warning(f"Sentinel Blocked Action '{action_name}': {e}")
+            
+            # Record the block for the dashboard (CRITICAL for visibility)
+            intervention_type = (
+                InterventionType.BUDGET_EXCEEDED 
+                if isinstance(e, BudgetExceededError) 
+                else InterventionType.HARD_BLOCK
+            )
+            
+            InterventionTracker.record(
+                intervention_type=intervention_type,
+                outcome=InterventionOutcome.BLOCKED,
+                action_name=action_name,
+                estimated_cost=cost,
+                reason=str(e),
+                original_inputs=metadata,
+                risk_level="high",
+                run_id=self.run_name,
+            )
+            
+            # Stop LangChain Execution - re-raise the error
+            raise e
+    
+    # =========================================================================
+    # 2. Sync Handlers (For standard Agents)
+    # =========================================================================
     
     def on_llm_start(
         self,
@@ -124,11 +225,25 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
-        """Run when LLM starts running."""
+        """Run when LLM starts running. Enforces policy before execution."""
         self._call_times[str(run_id)] = time.perf_counter()
         
         model_name = serialized.get("name", "unknown_model")
-        logger.debug(f"LLM started: {model_name} (run_id: {run_id})")
+        
+        # AUTHORIZE: Check if LLM call is allowed before making the API call
+        # We don't know exact cost yet, but we check if we're already over budget
+        self._enforce_policy(
+            action_name="llm_call", 
+            cost=0.0,  # Actual cost will be tracked in on_llm_end
+            metadata={
+                "model": model_name,
+                "run_id": str(run_id),
+                "parent_run_id": str(parent_run_id) if parent_run_id else None,
+                "prompt_count": len(prompts),
+            }
+        )
+        
+        logger.debug(f"LLM authorized and started: {model_name} (run_id: {run_id})")
     
     def on_llm_end(
         self,
@@ -257,14 +372,28 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
-        """Run when tool starts running."""
+        """Run when tool starts running. Enforces policy before execution."""
         if not self.track_tools:
             return
         
         self._call_times[str(run_id)] = time.perf_counter()
         
         tool_name = serialized.get("name", "unknown_tool")
-        logger.debug(f"Tool started: {tool_name} (run_id: {run_id})")
+        
+        # AUTHORIZE: Check if tool is allowed before running
+        # Tools usually cost $0, but budget might check count or deny specific tools
+        self._enforce_policy(
+            action_name=tool_name, 
+            cost=0.0,
+            metadata={
+                "input": input_str[:200] if input_str else None,  # Truncate for safety
+                "tool": tool_name,
+                "run_id": str(run_id),
+                "parent_run_id": str(parent_run_id) if parent_run_id else None,
+            }
+        )
+        
+        logger.debug(f"Tool authorized and started: {tool_name} (run_id: {run_id})")
     
     def on_tool_end(
         self,
@@ -422,6 +551,10 @@ class SentinelCallbackHandler(BaseCallbackHandler):
             duration = time.perf_counter() - start_time
         
         logger.error(f"Chain error (run_id: {run_id}): {error}")
+    
+    # =========================================================================
+    # 3. Utility Methods
+    # =========================================================================
     
     def get_run_summary(self) -> Dict[str, Any]:
         """

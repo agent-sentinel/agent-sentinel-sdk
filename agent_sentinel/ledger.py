@@ -201,6 +201,45 @@ class Ledger:
             logger.error(f"Agent Sentinel Drop: {e}")
     
     @classmethod
+    def log(
+        cls,
+        action: str,
+        status: str,
+        cost_usd: float,
+        duration_ns: int,
+        metadata: Optional[Dict[str, Any]] = None,
+        tags: Optional[list[str]] = None,
+    ) -> None:
+        """
+        Simplified logging interface for integrations.
+        
+        This is a convenience method that wraps record() with a simpler API
+        commonly used by framework integrations.
+        
+        Args:
+            action: Name of the action
+            status: Status string (e.g., "completed", "failed", "started")
+            cost_usd: Cost in USD
+            duration_ns: Duration in nanoseconds
+            metadata: Optional metadata dict
+            tags: Optional tags list
+        """
+        # Convert to the format expected by record()
+        duration_ms = duration_ns / 1_000_000.0  # Convert ns to ms
+        outcome = "success" if status in ("completed", "success") else "error"
+        
+        cls.record(
+            action=action,
+            inputs=metadata or {},
+            outputs={"status": status},
+            cost_usd=cost_usd,
+            duration_ms=duration_ms,
+            outcome=outcome,
+            tags=tags or [],
+            compliance_metadata=None,
+        )
+    
+    @classmethod
     def get_log_path(cls) -> Optional[Path]:
         """
         Get the current log file path.

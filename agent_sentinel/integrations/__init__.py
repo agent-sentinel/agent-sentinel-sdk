@@ -7,6 +7,7 @@ and LLM providers, enabling automatic cost tracking and action monitoring.
 Integrations:
 - LangChain: Callback handler for tracing chains, agents, and tools
 - CrewAI: Wrapper for crew actions and task execution
+- AutoGen: Inspector for agent-to-agent communication monitoring
 - LLM Providers: Instrumentation for OpenAI, Anthropic, Grok, and Gemini
 
 Usage:
@@ -15,6 +16,9 @@ Usage:
     
     # CrewAI
     from agent_sentinel.integrations.crewai import SentinelCrew
+    
+    # AutoGen
+    from agent_sentinel.integrations.autogen import SentinelInspector
     
     # LLM Instrumentation
     from agent_sentinel.integrations.llm import instrument_openai, instrument_anthropic
@@ -36,6 +40,13 @@ try:
 except ImportError:
     SentinelCrew = None  # type: ignore
     wrap_crew_action = None  # type: ignore
+
+try:
+    from .autogen import SentinelInspector, create_sentinel_agents
+    __all__.extend(["SentinelInspector", "create_sentinel_agents"])
+except ImportError:
+    SentinelInspector = None  # type: ignore
+    create_sentinel_agents = None  # type: ignore
 
 try:
     from .llm import (

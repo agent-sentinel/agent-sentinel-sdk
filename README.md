@@ -547,6 +547,184 @@ def execute_task(task: str) -> dict:
     return {"status": "done", "task": task}
 ```
 
+## 🔌 Framework Integrations
+
+AgentSentinel provides robust integrations with popular AI frameworks, featuring active policy enforcement and intervention tracking.
+
+### LangChain Integration
+
+The LangChain integration provides **4 critical features**:
+
+1. **Pre-Authorization Checks**: Blocks tools/LLMs if budget exceeded or policy violated (like a credit card terminal checking funds)
+2. **Intervention Recording**: Tracks blocked/modified actions for dashboard visibility
+3. **Async Support**: Fully compatible with async LangChain agents in production
+4. **Context Propagation**: Maintains agent identity and budget across nested chains
+
+**Basic Usage:**
+
+```python
+from langchain.chat_models import ChatOpenAI
+from langchain.agents import initialize_agent, Tool, AgentType
+from agent_sentinel.integrations.langchain import SentinelCallbackHandler
+
+# Create callback handler with enforcement
+sentinel = SentinelCallbackHandler(
+    run_name="my_agent_run",
+    track_costs=True,
+    track_tools=True,
+    enforce_policies=True  # Enable active blocking
+)
+
+# Use with LangChain LLM
+llm = ChatOpenAI(
+    temperature=0,
+    model="gpt-4o-mini",
+    callbacks=[sentinel]
+)
+
+# Or with agents
+agent = initialize_agent(
+    tools=tools,
+    llm=llm,
+    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+    callbacks=[sentinel],
+    verbose=True
+)
+
+# Run agent - enforcement happens automatically
+try:
+    result = agent.run("What's the weather in SF?")
+except BudgetExceededError as e:
+    print(f"Blocked: {e}")
+    # View interventions
+    from agent_sentinel import InterventionTracker
+    interventions = InterventionTracker.get_interventions()
+```
+
+**With Policy Enforcement:**
+
+```python
+from agent_sentinel import PolicyEngine
+
+# Configure budget and deny lists
+PolicyEngine.configure(
+    run_budget=0.50,  # Max $0.50 per run
+    denied_actions=["delete_database", "send_email"],
+    strict_mode=True
+)
+
+# Create handler - it will enforce policies before each action
+sentinel = SentinelCallbackHandler(
+    run_name="policy_enforced_agent",
+    enforce_policies=True
+)
+
+llm = ChatOpenAI(callbacks=[sentinel])
+
+# Second LLM call will be BLOCKED if over budget
+# Dangerous tools will be BLOCKED before execution
+# All blocks are recorded as interventions for dashboard
+```
+
+**Async Agents:**
+
+```python
+# Works with async LangChain agents automatically
+async def run_async_agent():
+    sentinel = SentinelCallbackHandler(
+        run_name="async_agent",
+        enforce_policies=True
+    )
+    
+    llm = ChatOpenAI(callbacks=[sentinel])
+    # All async callbacks are supported
+    result = await llm.apredict("Hello!")
+    return result
+```
+
+**Rate Limiting:**
+
+```python
+PolicyEngine.configure(
+    rate_limits={
+        "expensive_search": {
+            "max_count": 10,
+            "window_seconds": 60
+        }
+    }
+)
+
+# Tool will be blocked after 10 calls per minute
+sentinel = SentinelCallbackHandler(enforce_policies=True)
+agent = initialize_agent(tools, llm, callbacks=[sentinel])
+```
+
+**View Interventions:**
+
+```python
+from agent_sentinel import InterventionTracker
+
+# After running your agent
+interventions = InterventionTracker.get_interventions()
+
+for intervention in interventions:
+    print(f"Type: {intervention.intervention_type.value}")
+    print(f"Outcome: {intervention.outcome.value}")
+    print(f"Action: {intervention.action_name}")
+    print(f"Reason: {intervention.reason}")
+    print(f"Risk Level: {intervention.risk_level}")
+```
+
+**Examples:**
+
+- Basic tracking: `examples/langchain_integration.py`
+- Policy enforcement: `examples/langchain_policy_enforcement.py`
+
+### CrewAI Integration
+
+```python
+from agent_sentinel.integrations.crewai import SentinelCrewCallbacks
+from crewai import Agent, Task, Crew
+
+# Create callbacks
+callbacks = SentinelCrewCallbacks(
+    run_name="crewai_agent",
+    track_costs=True
+)
+
+# Create agent
+agent = Agent(
+    role="Researcher",
+    goal="Research topics",
+    backstory="Expert researcher",
+    callbacks=callbacks
+)
+
+# Create and run crew
+crew = Crew(agents=[agent], tasks=[task])
+result = crew.kickoff()
+```
+
+See `examples/crewai_integration.py` for more details.
+
+### OpenAI Integration
+
+```python
+from agent_sentinel.integrations.openai import track_openai
+
+# Track OpenAI calls automatically
+track_openai()
+
+# Now all OpenAI calls are tracked
+import openai
+response = openai.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello"}]
+)
+```
+
+See `examples/llm_instrumentation.py` for more integrations.
+
 ## 🐛 Troubleshooting
 
 ### Logs not appearing?
