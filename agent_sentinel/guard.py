@@ -258,8 +258,22 @@ def guarded_action(
                 *args, **kwargs
             )
 
-        return async_wrapper if is_async else sync_wrapper
-    
+        wrapper = async_wrapper if is_async else sync_wrapper
+        # Tag for discovery by sentinel_tool and auto_register_tools
+        wrapper._sentinel_guarded = True  # type: ignore[attr-defined]
+        wrapper._sentinel_config = {  # type: ignore[attr-defined]
+            "name": action_name,
+            "cost_usd": cost_usd,
+            "tags": tags,
+            "produces_evidence": produces_evidence,
+            "is_commit": is_commit,
+            "requires": requires,
+            "argument_constraints": argument_constraints,
+            "evidence_max_age_seconds": evidence_max_age_seconds,
+            "grounding_rules": grounding_rules,
+        }
+        return wrapper
+
     return decorator
 
 
