@@ -47,7 +47,8 @@ from ..cost import CostTracker
 from ..ledger import Ledger
 from ..policy import PolicyEngine
 from ..intervention import InterventionTracker, InterventionType, InterventionOutcome
-from ..errors import BudgetExceededError, PolicyViolationError
+from ..errors import BudgetExceededError, PolicyViolationError, EvidenceViolationError
+from ..evidence import EvidenceTracker
 
 try:
     from crewai import Crew, Agent, Task
@@ -67,22 +68,30 @@ def wrap_crew_action(
     cost_usd: float = 0.0,
     tags: Optional[List[str]] = None,
     requires_human_approval: bool = False,
+    produces_evidence: bool = False,
+    is_commit: bool = False,
+    requires: Optional[List[str]] = None,
+    grounding_rules: Optional[dict] = None,
 ):
     """
     Decorator to wrap CrewAI actions with AgentSentinel tracking.
-    
+
     This is a thin wrapper around @guarded_action that adds CrewAI-specific
     tags and metadata.
-    
+
     Args:
         name: Optional name for the action
         cost_usd: Estimated cost for this action
         tags: Optional tags for categorization
         requires_human_approval: Whether this action requires approval
-    
+        produces_evidence: Whether this action produces evidence for later use
+        is_commit: Whether this is a state-changing commit action
+        requires: List of action names that must have evidence before this runs
+        grounding_rules: Dict mapping argument fields to evidence sources
+
     Returns:
         Decorated function with AgentSentinel tracking
-    
+
     Example:
         @wrap_crew_action(name="web_search", cost_usd=0.02)
         def search_web(query: str) -> str:
@@ -90,12 +99,16 @@ def wrap_crew_action(
             return results
     """
     action_tags = ["crewai"] + (tags or [])
-    
+
     return guarded_action(
         name=name,
         cost_usd=cost_usd,
         tags=action_tags,
         requires_human_approval=requires_human_approval,
+        produces_evidence=produces_evidence,
+        is_commit=is_commit,
+        requires=requires,
+        grounding_rules=grounding_rules,
     )
 
 
@@ -300,14 +313,31 @@ class SentinelCrew:
                         # 1. AUTHORIZE: Check Policy before execution
                         if self.enforce_policies:
                             try:
-                                PolicyEngine.check_action(t_name, cost=0.0)
+                                PolicyEngine.check_action(t_name, cost=0.0, kwargs=kwargs)
+                            except EvidenceViolationError as e:
+                                logger.warning(f"Sentinel blocked tool '{t_name}' (evidence): {e}")
+
+                                InterventionTracker.record(
+                                    intervention_type=InterventionType.MISSING_EVIDENCE,
+                                    outcome=InterventionOutcome.BLOCKED,
+                                    action_name=t_name,
+                                    estimated_cost=0.0,
+                                    reason=str(e),
+                                    original_inputs={"args": str(args)[:200], "kwargs": str(kwargs)[:200]},
+                                    risk_level="medium",
+                                    run_id=self.run_name,
+                                    agent_id=a_id,
+                                    remediation_payload=e.remediation.to_dict(),
+                                )
+
+                                raise e
                             except (BudgetExceededError, PolicyViolationError) as e:
                                 logger.warning(f"Sentinel blocked tool '{t_name}': {e}")
-                                
+
                                 # Record intervention
                                 InterventionTracker.record(
                                     intervention_type=(
-                                        InterventionType.BUDGET_EXCEEDED 
+                                        InterventionType.BUDGET_EXCEEDED
                                         if isinstance(e, BudgetExceededError)
                                         else InterventionType.HARD_BLOCK
                                     ),
@@ -320,17 +350,22 @@ class SentinelCrew:
                                     run_id=self.run_name,
                                     agent_id=a_id,
                                 )
-                                
+
                                 # Re-raise to stop execution
                                 raise e
-                        
+
                         # 2. LOG: Track tool execution
                         start_time = time.perf_counter()
                         try:
                             # 3. EXECUTE: Run the original tool
                             result = orig_func(*args, **kwargs)
-                            
-                            # 4. RECORD: Log successful execution
+
+                            # 4. RECORD: Record evidence if tool is in evidence_actions
+                            config = PolicyEngine.get_config()
+                            if config and t_name in config.evidence_actions:
+                                EvidenceTracker.record_evidence(t_name, kwargs=kwargs, result=result)
+
+                            # 5. LOG: Log successful execution
                             duration = time.perf_counter() - start_time
                             if self.auto_log:
                                 Ledger.log(
@@ -345,7 +380,7 @@ class SentinelCrew:
                                     },
                                     tags=self.tags + ["tool", f"agent:{a_id}"],
                                 )
-                            
+
                             return result
                         
                         except Exception as e:
