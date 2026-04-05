@@ -47,7 +47,7 @@ from ..cost import CostTracker
 from ..ledger import Ledger
 from ..policy import PolicyEngine
 from ..intervention import InterventionTracker, InterventionType, InterventionOutcome
-from ..errors import AgentSentinelError, BudgetExceededError, PolicyViolationError
+from ..errors import AgentSentinelError, BudgetExceededError, PolicyViolationError, EvidenceViolationError
 
 # Try new LangChain imports first (langchain-core), then fall back to old imports
 try:
@@ -128,9 +128,10 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         self.enforce_policies = enforce_policies
         self.tags = tags or ["langchain"]
         
-        # Track call times and counts
+        # Track call times, counts, and tool names
         self._call_times: Dict[str, float] = {}
         self._call_counts: Dict[str, int] = {}
+        self._tool_names: Dict[str, str] = {}  # run_id -> tool_name
         
         # Session tracking
         self._session_start = time.time()
@@ -188,14 +189,18 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         except (BudgetExceededError, PolicyViolationError) as e:
             # The "Transaction Declined" Step
             logger.warning(f"Sentinel Blocked Action '{action_name}': {e}")
-            
-            # Record the block for the dashboard (CRITICAL for visibility)
-            intervention_type = (
-                InterventionType.BUDGET_EXCEEDED 
-                if isinstance(e, BudgetExceededError) 
-                else InterventionType.HARD_BLOCK
-            )
-            
+
+            # Determine intervention type based on error
+            if isinstance(e, EvidenceViolationError):
+                intervention_type = InterventionType.MISSING_EVIDENCE
+                remediation_payload = e.remediation.to_dict()
+            elif isinstance(e, BudgetExceededError):
+                intervention_type = InterventionType.BUDGET_EXCEEDED
+                remediation_payload = None
+            else:
+                intervention_type = InterventionType.HARD_BLOCK
+                remediation_payload = None
+
             InterventionTracker.record(
                 intervention_type=intervention_type,
                 outcome=InterventionOutcome.BLOCKED,
@@ -205,8 +210,9 @@ class SentinelCallbackHandler(BaseCallbackHandler):
                 original_inputs=metadata,
                 risk_level="high",
                 run_id=self.run_name,
+                remediation_payload=remediation_payload,
             )
-            
+
             # Stop LangChain Execution - re-raise the error
             raise e
     
@@ -379,7 +385,8 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         self._call_times[str(run_id)] = time.perf_counter()
         
         tool_name = serialized.get("name", "unknown_tool")
-        
+        self._tool_names[str(run_id)] = tool_name
+
         # AUTHORIZE: Check if tool is allowed before running
         # Tools usually cost $0, but budget might check count or deny specific tools
         self._enforce_policy(
@@ -407,16 +414,25 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         """Run when tool ends running."""
         if not self.track_tools:
             return
-        
+
         duration = 0.0
         if str(run_id) in self._call_times:
             start_time = self._call_times.pop(str(run_id))
             duration = time.perf_counter() - start_time
-        
+
+        # Record evidence if this tool is configured as evidence-producing
+        if self.enforce_policies:
+            config = PolicyEngine.get_config()
+            if config and config.evidence_actions:
+                tool_name = self._tool_names.pop(str(run_id), "unknown_tool")
+                if tool_name in config.evidence_actions:
+                    from ..evidence import EvidenceTracker
+                    EvidenceTracker.record_evidence(tool_name)
+
         if self.auto_log:
             combined_tags = list(self.tags) + (tags or [])
             combined_tags.append("tool")
-            
+
             Ledger.log(
                 action="tool_call",
                 status="completed",
@@ -430,7 +446,7 @@ class SentinelCallbackHandler(BaseCallbackHandler):
                 },
                 tags=combined_tags,
             )
-        
+
         logger.debug(f"Tool completed (run_id: {run_id}) in {duration:.2f}s")
     
     def on_tool_error(

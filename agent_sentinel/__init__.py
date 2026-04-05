@@ -6,12 +6,15 @@ from .errors import (
     AgentKilledError,
     BudgetExceededError,
     PolicyViolationError,
+    EvidenceViolationError,
+    RemediationPayload,
     ReplayDivergenceError,
     NetworkError,
     SyncError,
     TimeoutError,
     ConfigurationError,
 )
+from .evidence import EvidenceTracker, EvidenceRecord
 from .retry import (
     RetryConfig,
     CircuitBreaker,
@@ -99,6 +102,10 @@ __all__ = [
     "AgentKilledError",
     "BudgetExceededError",
     "PolicyViolationError",
+    "EvidenceViolationError",
+    "RemediationPayload",
+    "EvidenceTracker",
+    "EvidenceRecord",
     "ReplayDivergenceError",
     "NetworkError",
     "SyncError",

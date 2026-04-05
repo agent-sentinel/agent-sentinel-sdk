@@ -27,6 +27,7 @@ class InterventionType(str, Enum):
     BUDGET_EXCEEDED = "budget_exceeded"    # Blocked due to budget constraints
     DOWNGRADE = "downgrade"                # Action parameters modified/reduced
     WARNING = "warning"                    # Allowed but flagged as risky
+    MISSING_EVIDENCE = "missing_evidence"  # Blocked due to missing prerequisite evidence
 
 
 class InterventionOutcome(str, Enum):
@@ -80,10 +81,13 @@ class InterventionRecord:
     
     # Additional context
     context: Dict[str, Any] = field(default_factory=dict)
-    
+
+    # Structured remediation payload (for evidence violations)
+    remediation_payload: Optional[Dict[str, Any]] = None
+
     # Timestamp
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -105,6 +109,7 @@ class InterventionRecord:
             "original_inputs": self.original_inputs,
             "modified_inputs": self.modified_inputs,
             "context": self.context,
+            "remediation_payload": self.remediation_payload,
             "timestamp": self.timestamp,
         }
 
@@ -160,15 +165,16 @@ class InterventionTracker:
         original_inputs: Optional[Dict[str, Any]] = None,
         modified_inputs: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
+        remediation_payload: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Record an intervention.
-        
+
         This is called whenever Sentinel blocks, pauses, or modifies an action.
         """
         if not cls._initialized:
             cls.initialize()
-        
+
         intervention = InterventionRecord(
             intervention_type=intervention_type,
             outcome=outcome,
@@ -188,6 +194,7 @@ class InterventionTracker:
             original_inputs=original_inputs,
             modified_inputs=modified_inputs,
             context=context or {},
+            remediation_payload=remediation_payload,
         )
         
         # Write to local file
@@ -248,6 +255,7 @@ class InterventionTracker:
                             original_inputs=data.get("original_inputs"),
                             modified_inputs=data.get("modified_inputs"),
                             context=data.get("context", {}),
+                            remediation_payload=data.get("remediation_payload"),
                             timestamp=data.get("timestamp"),
                         ))
             

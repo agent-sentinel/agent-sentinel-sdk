@@ -28,7 +28,7 @@ from .ledger import Ledger
 from .cost import CostTracker
 from .policy import PolicyEngine
 from .context import ExecutionContext
-from .errors import BudgetExceededError, PolicyViolationError
+from .errors import BudgetExceededError, PolicyViolationError, EvidenceViolationError
 
 logger = logging.getLogger("agent_sentinel")
 
@@ -136,6 +136,34 @@ def _record_approval_intervention(
     )
 
 
+def _record_evidence_intervention(
+    action_name: str,
+    cost: float,
+    error: EvidenceViolationError,
+    args: tuple,
+    kwargs: dict,
+) -> None:
+    """Record an intervention when an action is blocked due to missing evidence."""
+    from .intervention import InterventionTracker, InterventionType, InterventionOutcome
+
+    ctx = ExecutionContext.current()
+
+    InterventionTracker.record(
+        intervention_type=InterventionType.MISSING_EVIDENCE,
+        outcome=InterventionOutcome.BLOCKED,
+        action_name=action_name,
+        estimated_cost=cost,
+        reason=str(error),
+        blast_radius={"cost_prevented": cost},
+        original_inputs={"args": args, "kwargs": kwargs},
+        agent_id=ctx.agent_id if ctx else None,
+        task_id=ctx.task_id if ctx else None,
+        mission_id=ctx.mission_id if ctx else None,
+        risk_level="medium",
+        remediation_payload=error.remediation.to_dict(),
+    )
+
+
 def guarded_action(
     name: Optional[str] = None,
     cost_usd: float = 0.0,
@@ -145,6 +173,11 @@ def guarded_action(
     agent_id: Optional[str] = None,
     task_id: Optional[str] = None,
     mission_id: Optional[str] = None,
+    produces_evidence: bool = False,
+    is_commit: bool = False,
+    requires: Optional[list[str]] = None,
+    argument_constraints: Optional[dict] = None,
+    evidence_max_age_seconds: Optional[int] = None,
 ):
     """
     Decorator to wrap an agent action (tool call, API request) with
@@ -203,9 +236,11 @@ def guarded_action(
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             return await _execute_async(
-                func, action_name, cost_usd, tags, 
+                func, action_name, cost_usd, tags,
                 requires_human_approval, description,
                 agent_id, task_id, mission_id,
+                produces_evidence, is_commit, requires,
+                argument_constraints, evidence_max_age_seconds,
                 *args, **kwargs
             )
 
@@ -215,6 +250,8 @@ def guarded_action(
                 func, action_name, cost_usd, tags,
                 requires_human_approval, description,
                 agent_id, task_id, mission_id,
+                produces_evidence, is_commit, requires,
+                argument_constraints, evidence_max_age_seconds,
                 *args, **kwargs
             )
 
@@ -233,6 +270,11 @@ async def _execute_async(
     agent_id: Optional[str],
     task_id: Optional[str],
     mission_id: Optional[str],
+    produces_evidence: bool,
+    is_commit: bool,
+    requires: Optional[list[str]],
+    argument_constraints: Optional[dict],
+    evidence_max_age_seconds: Optional[int],
     *args,
     **kwargs
 ):
@@ -332,50 +374,71 @@ async def _execute_async(
             agent_id=agent_id, mission_id=mission_id
         )
 
-    # Phase 2: Check policy BEFORE execution
-    # This may raise BudgetExceededError or PolicyViolationError
+    # Phase 2: Check policy BEFORE execution (includes evidence requirements from policy)
+    # This may raise BudgetExceededError, PolicyViolationError, or EvidenceViolationError
     try:
-        PolicyEngine.check_action(action_name, cost)
-    except (BudgetExceededError, PolicyViolationError) as e:
-        # Log the policy violation but don't record cost (action didn't run)
-        logger.warning(f"Policy blocked action '{action_name}': {e}")
-
-        # Record the intervention (core value proposition)
-        _record_policy_intervention(action_name, cost, e, args, kwargs)
-
+        PolicyEngine.check_action(action_name, cost, kwargs=kwargs)
+    except EvidenceViolationError as e:
+        logger.warning(f"Evidence requirement blocked action '{action_name}': {e}")
+        _record_evidence_intervention(action_name, cost, e, args, kwargs)
         clear_compliance_metadata()
         raise
-    
+    except (BudgetExceededError, PolicyViolationError) as e:
+        logger.warning(f"Policy blocked action '{action_name}': {e}")
+        _record_policy_intervention(action_name, cost, e, args, kwargs)
+        clear_compliance_metadata()
+        raise
+
+    # Decorator-level evidence requirement check
+    if requires:
+        from .evidence import EvidenceTracker
+        all_met, missing, stale = EvidenceTracker.check_requirements(requires, evidence_max_age_seconds)
+        if not all_met:
+            error = EvidenceViolationError(
+                message=f"Action '{action_name}' requires prior execution of: {missing + stale}",
+                action_name=action_name,
+                missing_requirements=missing,
+                required_prior_actions=requires,
+                stale_evidence=stale,
+            )
+            _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            clear_compliance_metadata()
+            raise error
+
     start_ns = time.perf_counter_ns()
     outcome = "success"
     error_message = None
     result = None
-    
+
     try:
         # Execute the actual async function
         result = await func(*args, **kwargs)
         return result
-    
+
     except Exception as e:
         # Capture the error details
         outcome = "error"
         error_message = f"{type(e).__name__}: {str(e)}"
         # Re-raise to preserve user's error handling
         raise
-    
+
     finally:
         # Always record telemetry and cost, even if function failed
-        # (Cost is recorded because the action executed, even if it errored)
         duration_ms = (time.perf_counter_ns() - start_ns) / 1_000_000
-        
+
         # Phase 2: Record cost to tracker
         CostTracker.add_cost(action_name, cost)
-        
+
+        # Record evidence if this action produces it and succeeded
+        if produces_evidence and outcome == "success":
+            from .evidence import EvidenceTracker
+            EvidenceTracker.record_evidence(action_name, kwargs=kwargs, result=result)
+
         # Phase 5: Include compliance metadata in logs if present
         from .compliance import get_compliance_metadata, clear_compliance_metadata
         compliance_meta = get_compliance_metadata()
         compliance_dict = compliance_meta.to_dict() if compliance_meta else None
-        
+
         _safe_log(
             action_name, args, kwargs, result, error_message,
             cost,
@@ -387,7 +450,7 @@ async def _execute_async(
             task_id,
             mission_id,
         )
-        
+
         # Clear compliance metadata after logging
         clear_compliance_metadata()
 
@@ -402,6 +465,11 @@ def _execute_sync(
     agent_id: Optional[str],
     task_id: Optional[str],
     mission_id: Optional[str],
+    produces_evidence: bool,
+    is_commit: bool,
+    requires: Optional[list[str]],
+    argument_constraints: Optional[dict],
+    evidence_max_age_seconds: Optional[int],
     *args,
     **kwargs
 ):
@@ -501,20 +569,36 @@ def _execute_sync(
             agent_id=agent_id, mission_id=mission_id
         )
 
-    # Phase 2: Check policy BEFORE execution
-    # This may raise BudgetExceededError or PolicyViolationError
+    # Phase 2: Check policy BEFORE execution (includes evidence requirements from policy)
     try:
-        PolicyEngine.check_action(action_name, cost)
-    except (BudgetExceededError, PolicyViolationError) as e:
-        # Log the policy violation but don't record cost (action didn't run)
-        logger.warning(f"Policy blocked action '{action_name}': {e}")
-
-        # Record the intervention (core value proposition)
-        _record_policy_intervention(action_name, cost, e, args, kwargs)
-
+        PolicyEngine.check_action(action_name, cost, kwargs=kwargs)
+    except EvidenceViolationError as e:
+        logger.warning(f"Evidence requirement blocked action '{action_name}': {e}")
+        _record_evidence_intervention(action_name, cost, e, args, kwargs)
         clear_compliance_metadata()
         raise
-    
+    except (BudgetExceededError, PolicyViolationError) as e:
+        logger.warning(f"Policy blocked action '{action_name}': {e}")
+        _record_policy_intervention(action_name, cost, e, args, kwargs)
+        clear_compliance_metadata()
+        raise
+
+    # Decorator-level evidence requirement check
+    if requires:
+        from .evidence import EvidenceTracker
+        all_met, missing, stale = EvidenceTracker.check_requirements(requires, evidence_max_age_seconds)
+        if not all_met:
+            error = EvidenceViolationError(
+                message=f"Action '{action_name}' requires prior execution of: {missing + stale}",
+                action_name=action_name,
+                missing_requirements=missing,
+                required_prior_actions=requires,
+                stale_evidence=stale,
+            )
+            _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            clear_compliance_metadata()
+            raise error
+
     start_ns = time.perf_counter_ns()
     outcome = "success"
     error_message = None
@@ -524,27 +608,31 @@ def _execute_sync(
         # Execute the actual sync function
         result = func(*args, **kwargs)
         return result
-    
+
     except Exception as e:
         # Capture the error details
         outcome = "error"
         error_message = f"{type(e).__name__}: {str(e)}"
         # Re-raise to preserve user's error handling
         raise
-    
+
     finally:
         # Always record telemetry and cost, even if function failed
-        # (Cost is recorded because the action executed, even if it errored)
         duration_ms = (time.perf_counter_ns() - start_ns) / 1_000_000
-        
+
         # Phase 2: Record cost to tracker
         CostTracker.add_cost(action_name, cost)
-        
+
+        # Record evidence if this action produces it and succeeded
+        if produces_evidence and outcome == "success":
+            from .evidence import EvidenceTracker
+            EvidenceTracker.record_evidence(action_name, kwargs=kwargs, result=result)
+
         # Phase 5: Include compliance metadata in logs if present
         from .compliance import get_compliance_metadata, clear_compliance_metadata
         compliance_meta = get_compliance_metadata()
         compliance_dict = compliance_meta.to_dict() if compliance_meta else None
-        
+
         _safe_log(
             action_name, args, kwargs, result, error_message,
             cost,
@@ -556,7 +644,7 @@ def _execute_sync(
             task_id,
             mission_id,
         )
-        
+
         # Clear compliance metadata after logging
         clear_compliance_metadata()
 
