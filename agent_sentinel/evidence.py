@@ -36,6 +36,7 @@ class EvidenceRecord:
     timestamp: float = field(default_factory=time.time)
     args_hash: Optional[str] = None
     result_summary: Any = None
+    raw_kwargs: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -44,6 +45,7 @@ class EvidenceRecord:
             "timestamp": self.timestamp,
             "args_hash": self.args_hash,
             "result_summary": self.result_summary,
+            "raw_kwargs": self.raw_kwargs,
         }
 
 
@@ -56,6 +58,20 @@ def _hash_args(kwargs: Optional[Dict[str, Any]]) -> Optional[str]:
         return hashlib.sha256(serialized.encode()).hexdigest()[:16]
     except (TypeError, ValueError):
         return None
+
+
+def _get_nested_value(data: Any, dotted_path: str) -> Any:
+    """Get a value from a nested dict using dot-notation path."""
+    if data is None:
+        return None
+    parts = dotted_path.split(".")
+    current = data
+    for part in parts:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
 
 
 class EvidenceTracker:
@@ -104,6 +120,7 @@ class EvidenceTracker:
             timestamp=time.time(),
             args_hash=_hash_args(kwargs),
             result_summary=result,
+            raw_kwargs=dict(kwargs) if kwargs else None,
         )
 
         with cls._lock:
@@ -212,6 +229,79 @@ class EvidenceTracker:
 
         all_satisfied = len(missing) == 0 and len(stale) == 0
         return all_satisfied, missing, stale
+
+    @classmethod
+    def check_groundedness(
+        cls,
+        action_kwargs: Dict[str, Any],
+        grounding_rules: Dict[str, Dict[str, str]],
+        max_age_seconds: Optional[int] = None,
+    ) -> tuple[bool, List[Dict[str, Any]]]:
+        """
+        Verify that action arguments are grounded in prior evidence.
+
+        Each grounding rule maps an argument field to a source action and field:
+            {
+                "order_id": {
+                    "source_action": "lookup_order",
+                    "source_field": "order_id",  # dot-notation for nested: "order.id"
+                    "source_from": "result",      # "result" (default) or "kwargs"
+                },
+            }
+
+        Args:
+            action_kwargs: The commit action's keyword arguments
+            grounding_rules: Map of field_name -> source rule
+            max_age_seconds: If set, only consider evidence newer than this
+
+        Returns:
+            Tuple of (all_grounded, ungrounded_details)
+        """
+        if not grounding_rules:
+            return True, []
+
+        ungrounded = []
+
+        with cls._lock:
+            now = time.time()
+            for field_name, rule in grounding_rules.items():
+                source_action = rule["source_action"]
+                source_field = rule["source_field"]
+                source_from = rule.get("source_from", "result")
+
+                actual_value = action_kwargs.get(field_name)
+                if actual_value is None:
+                    continue
+
+                found = False
+                for record in reversed(cls._run_evidence):
+                    if record.action_name != source_action:
+                        continue
+                    if max_age_seconds is not None:
+                        if (now - record.timestamp) > max_age_seconds:
+                            continue
+
+                    if source_from == "kwargs":
+                        source_data = record.raw_kwargs
+                    else:
+                        source_data = record.result_summary
+
+                    if source_data is None:
+                        continue
+
+                    evidence_value = _get_nested_value(source_data, source_field)
+                    if evidence_value is not None and evidence_value == actual_value:
+                        found = True
+                        break
+
+                if not found:
+                    ungrounded.append({
+                        "field": field_name,
+                        "expected_source": f"{source_action}.{source_field}",
+                        "actual_value": actual_value,
+                    })
+
+        return len(ungrounded) == 0, ungrounded
 
     @classmethod
     def reset_run(cls) -> None:
