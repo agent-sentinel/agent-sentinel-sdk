@@ -178,6 +178,7 @@ def guarded_action(
     requires: Optional[list[str]] = None,
     argument_constraints: Optional[dict] = None,
     evidence_max_age_seconds: Optional[int] = None,
+    grounding_rules: Optional[dict] = None,
 ):
     """
     Decorator to wrap an agent action (tool call, API request) with
@@ -241,6 +242,7 @@ def guarded_action(
                 agent_id, task_id, mission_id,
                 produces_evidence, is_commit, requires,
                 argument_constraints, evidence_max_age_seconds,
+                grounding_rules,
                 *args, **kwargs
             )
 
@@ -252,6 +254,7 @@ def guarded_action(
                 agent_id, task_id, mission_id,
                 produces_evidence, is_commit, requires,
                 argument_constraints, evidence_max_age_seconds,
+                grounding_rules,
                 *args, **kwargs
             )
 
@@ -275,6 +278,7 @@ async def _execute_async(
     requires: Optional[list[str]],
     argument_constraints: Optional[dict],
     evidence_max_age_seconds: Optional[int],
+    grounding_rules: Optional[dict],
     *args,
     **kwargs
 ):
@@ -405,6 +409,30 @@ async def _execute_async(
             clear_compliance_metadata()
             raise error
 
+    # Decorator-level groundedness check
+    if grounding_rules and kwargs:
+        from .evidence import EvidenceTracker
+        grounded, ungrounded_details = EvidenceTracker.check_groundedness(
+            action_kwargs=kwargs,
+            grounding_rules=grounding_rules,
+            max_age_seconds=evidence_max_age_seconds,
+        )
+        if not grounded:
+            field_names = [d["field"] for d in ungrounded_details]
+            error = EvidenceViolationError(
+                message=f"Action '{action_name}' arguments not grounded in evidence: {field_names}",
+                action_name=action_name,
+                argument_violations=[
+                    f"'{d['field']}' value '{d['actual_value']}' not found in {d['expected_source']}"
+                    for d in ungrounded_details
+                ],
+                retry_guidance=f"Ensure these arguments match prior evidence: {field_names}",
+            )
+            error.remediation.reason_code = "UNGROUNDED_ARGUMENT"
+            _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            clear_compliance_metadata()
+            raise error
+
     start_ns = time.perf_counter_ns()
     outcome = "success"
     error_message = None
@@ -470,6 +498,7 @@ def _execute_sync(
     requires: Optional[list[str]],
     argument_constraints: Optional[dict],
     evidence_max_age_seconds: Optional[int],
+    grounding_rules: Optional[dict],
     *args,
     **kwargs
 ):
@@ -595,6 +624,30 @@ def _execute_sync(
                 required_prior_actions=requires,
                 stale_evidence=stale,
             )
+            _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            clear_compliance_metadata()
+            raise error
+
+    # Decorator-level groundedness check
+    if grounding_rules and kwargs:
+        from .evidence import EvidenceTracker
+        grounded, ungrounded_details = EvidenceTracker.check_groundedness(
+            action_kwargs=kwargs,
+            grounding_rules=grounding_rules,
+            max_age_seconds=evidence_max_age_seconds,
+        )
+        if not grounded:
+            field_names = [d["field"] for d in ungrounded_details]
+            error = EvidenceViolationError(
+                message=f"Action '{action_name}' arguments not grounded in evidence: {field_names}",
+                action_name=action_name,
+                argument_violations=[
+                    f"'{d['field']}' value '{d['actual_value']}' not found in {d['expected_source']}"
+                    for d in ungrounded_details
+                ],
+                retry_guidance=f"Ensure these arguments match prior evidence: {field_names}",
+            )
+            error.remediation.reason_code = "UNGROUNDED_ARGUMENT"
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
             clear_compliance_metadata()
             raise error

@@ -87,6 +87,7 @@ class PolicyConfig:
     commit_actions: List[str] = field(default_factory=list)
     evidence_actions: List[str] = field(default_factory=list)
     argument_constraints: Dict[str, dict] = field(default_factory=dict)
+    grounding_rules: Dict[str, Dict[str, Dict[str, str]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -302,6 +303,7 @@ class PolicyEngine:
         commit_actions: Optional[List[str]] = None,
         evidence_actions: Optional[List[str]] = None,
         argument_constraints: Optional[Dict[str, dict]] = None,
+        grounding_rules: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None,
     ) -> None:
         """
         Configure policy engine programmatically.
@@ -333,6 +335,7 @@ class PolicyEngine:
             commit_actions=commit_actions or [],
             evidence_actions=evidence_actions or [],
             argument_constraints=argument_constraints or {},
+            grounding_rules=grounding_rules or {},
         )
         cls._initialized = True
         logger.info("Policy engine configured programmatically")
@@ -425,6 +428,7 @@ class PolicyEngine:
             commit_actions = evidence.get("commit_actions", [])
             evidence_actions = evidence.get("evidence_actions", [])
             argument_constraints = evidence.get("argument_constraints", {})
+            grounding_rules = evidence.get("grounding_rules", {})
 
             cls.configure(
                 session_budget=session_budget,
@@ -439,6 +443,7 @@ class PolicyEngine:
                 commit_actions=commit_actions,
                 evidence_actions=evidence_actions,
                 argument_constraints=argument_constraints,
+                grounding_rules=grounding_rules,
             )
             
             logger.info(f"Policy engine loaded from {config_path}")
@@ -691,6 +696,11 @@ class PolicyEngine:
             if policy.get("argument_constraints"):
                 for action, constraints in policy["argument_constraints"].items():
                     cls._config.argument_constraints[action] = constraints
+
+            # Merge grounding rules (per-action, last policy wins)
+            if policy.get("grounding_rules"):
+                for action, rules in policy["grounding_rules"].items():
+                    cls._config.grounding_rules[action] = rules
     
     @classmethod
     def _start_background_sync(cls) -> None:
@@ -841,6 +851,28 @@ class PolicyEngine:
                     action_name=action,
                     argument_violations=violations,
                 )
+
+        # 8. Check groundedness
+        if action in config.grounding_rules and kwargs:
+            from .evidence import EvidenceTracker
+            grounded, ungrounded_details = EvidenceTracker.check_groundedness(
+                action_kwargs=kwargs,
+                grounding_rules=config.grounding_rules[action],
+                max_age_seconds=config.evidence_max_age_seconds.get(action),
+            )
+            if not grounded:
+                field_names = [d["field"] for d in ungrounded_details]
+                error = EvidenceViolationError(
+                    message=f"Action '{action}' arguments not grounded in evidence: {field_names}",
+                    action_name=action,
+                    argument_violations=[
+                        f"'{d['field']}' value '{d['actual_value']}' not found in {d['expected_source']}"
+                        for d in ungrounded_details
+                    ],
+                    retry_guidance=f"Ensure these arguments match prior evidence: {field_names}",
+                )
+                error.remediation.reason_code = "UNGROUNDED_ARGUMENT"
+                raise error
 
     @classmethod
     def get_config(cls) -> Optional[PolicyConfig]:
