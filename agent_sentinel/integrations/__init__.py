@@ -57,6 +57,12 @@ except Exception:
     AnthropicSentinelTools = None  # type: ignore
 
 try:
+    from .langgraph import SentinelToolNode
+    __all__.append("SentinelToolNode")
+except Exception:
+    SentinelToolNode = None  # type: ignore
+
+try:
     from .registry import auto_register_tools, discover_tools
     __all__.extend(["auto_register_tools", "discover_tools"])
 except Exception:
