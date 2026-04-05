@@ -15,6 +15,7 @@ from .errors import (
     ConfigurationError,
 )
 from .evidence import EvidenceTracker, EvidenceRecord
+from .constraints import validate_constraints
 from .retry import (
     RetryConfig,
     CircuitBreaker,
@@ -106,6 +107,7 @@ __all__ = [
     "RemediationPayload",
     "EvidenceTracker",
     "EvidenceRecord",
+    "validate_constraints",
     "ReplayDivergenceError",
     "NetworkError",
     "SyncError",
