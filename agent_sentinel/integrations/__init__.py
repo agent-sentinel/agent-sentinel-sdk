@@ -27,24 +27,27 @@ from __future__ import annotations
 
 __all__ = []
 
-# Optional imports - only available if dependencies are installed
+# Optional imports - only available if dependencies are installed.
+# We catch Exception (not just ImportError) because some frameworks
+# crash at import time on unsupported Python versions (e.g. chromadb
+# on Python 3.14 via pydantic v1 ConfigError).
 try:
     from .langchain import SentinelCallbackHandler
     __all__.append("SentinelCallbackHandler")
-except ImportError:
+except Exception:
     SentinelCallbackHandler = None  # type: ignore
 
 try:
     from .crewai import SentinelCrew, wrap_crew_action
     __all__.extend(["SentinelCrew", "wrap_crew_action"])
-except ImportError:
+except Exception:
     SentinelCrew = None  # type: ignore
     wrap_crew_action = None  # type: ignore
 
 try:
     from .autogen import SentinelInspector, create_sentinel_agents
     __all__.extend(["SentinelInspector", "create_sentinel_agents"])
-except ImportError:
+except Exception:
     SentinelInspector = None  # type: ignore
     create_sentinel_agents = None  # type: ignore
 
@@ -58,12 +61,12 @@ try:
     )
     __all__.extend([
         "instrument_openai",
-        "instrument_anthropic", 
+        "instrument_anthropic",
         "instrument_grok",
         "instrument_gemini",
         "get_token_costs",
     ])
-except ImportError:
+except Exception:
     instrument_openai = None  # type: ignore
     instrument_anthropic = None  # type: ignore
     instrument_grok = None  # type: ignore

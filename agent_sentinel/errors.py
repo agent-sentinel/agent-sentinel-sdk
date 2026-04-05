@@ -63,6 +63,9 @@ class BudgetExceededError(AgentSentinelError):
             budget_type: Type of budget (action, run, session)
             details: Additional error context
         """
+        self.spent = spent
+        self.limit = limit
+        self.budget_type = budget_type
         details = details or {}
         details.update({"spent": spent, "limit": limit, "budget_type": budget_type})
         super().__init__(
@@ -238,6 +241,29 @@ class TimeoutError(AgentSentinelError):
             error_code="TIMEOUT",
             details=details,
             recoverable=True,  # Timeouts are usually retryable
+        )
+
+
+class AgentKilledError(AgentSentinelError):
+    """Raised when an agent, run, or mission has been killed via kill switch."""
+
+    def __init__(
+        self,
+        message: str,
+        target_type: Optional[str] = None,
+        target_id: Optional[str] = None,
+        details: Optional[dict[str, Any]] = None,
+    ):
+        details = details or {}
+        if target_type:
+            details["target_type"] = target_type
+        if target_id:
+            details["target_id"] = target_id
+        super().__init__(
+            message=message,
+            error_code="AGENT_KILLED",
+            details=details,
+            recoverable=False,
         )
 
 

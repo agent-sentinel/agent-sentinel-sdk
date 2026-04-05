@@ -58,6 +58,8 @@ class InterventionRecord:
     # Context
     agent_id: Optional[str] = None
     run_id: Optional[str] = None
+    task_id: Optional[str] = None
+    mission_id: Optional[str] = None
     policy_name: Optional[str] = None
     
     # Cost/Risk
@@ -91,6 +93,8 @@ class InterventionRecord:
             "action_description": self.action_description,
             "agent_id": self.agent_id,
             "run_id": self.run_id,
+            "task_id": self.task_id,
+            "mission_id": self.mission_id,
             "policy_name": self.policy_name,
             "estimated_cost": self.estimated_cost,
             "actual_cost": self.actual_cost,
@@ -144,6 +148,8 @@ class InterventionTracker:
         action_description: Optional[str] = None,
         agent_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        mission_id: Optional[str] = None,
         policy_name: Optional[str] = None,
         estimated_cost: float = 0.0,
         actual_cost: float = 0.0,
@@ -170,6 +176,8 @@ class InterventionTracker:
             action_description=action_description,
             agent_id=agent_id,
             run_id=run_id,
+            task_id=task_id,
+            mission_id=mission_id,
             policy_name=policy_name,
             estimated_cost=estimated_cost,
             actual_cost=actual_cost,
@@ -228,6 +236,8 @@ class InterventionTracker:
                             action_description=data.get("action_description"),
                             agent_id=data.get("agent_id"),
                             run_id=data.get("run_id"),
+                            task_id=data.get("task_id"),
+                            mission_id=data.get("mission_id"),
                             policy_name=data.get("policy_name"),
                             estimated_cost=data.get("estimated_cost", 0.0),
                             actual_cost=data.get("actual_cost", 0.0),

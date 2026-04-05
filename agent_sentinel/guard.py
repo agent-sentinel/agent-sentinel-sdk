@@ -27,7 +27,8 @@ from typing import Optional, Any, Callable
 from .ledger import Ledger
 from .cost import CostTracker
 from .policy import PolicyEngine
-from .errors import AgentSentinelError, BudgetExceededError, PolicyViolationError
+from .context import ExecutionContext
+from .errors import BudgetExceededError, PolicyViolationError
 
 logger = logging.getLogger("agent_sentinel")
 
@@ -45,14 +46,13 @@ def _record_policy_intervention(
     This is the core value proposition - tracking where Sentinel said "no".
     """
     from .intervention import InterventionTracker, InterventionType, InterventionOutcome
-    from .cost import CostTracker
-    
+
     # Determine intervention type
     if isinstance(error, BudgetExceededError):
         intervention_type = InterventionType.BUDGET_EXCEEDED
         reason = str(error)
         blast_radius = {
-            "budget_protected": error.limit if hasattr(error, 'limit') else 0.0,
+            "budget_protected": error.limit,
             "cost_prevented": cost,
         }
     else:
@@ -63,10 +63,10 @@ def _record_policy_intervention(
             intervention_type = InterventionType.HARD_BLOCK
         reason = str(error)
         blast_radius = {"cost_prevented": cost}
-    
-    # Get current run context
-    run_id = CostTracker._current_run_id if hasattr(CostTracker, '_current_run_id') else None
-    
+
+    # Get current context for attribution
+    ctx = ExecutionContext.current()
+
     # Record the intervention
     InterventionTracker.record(
         intervention_type=intervention_type,
@@ -76,7 +76,9 @@ def _record_policy_intervention(
         reason=reason,
         blast_radius=blast_radius,
         original_inputs={"args": args, "kwargs": kwargs},
-        run_id=run_id,
+        agent_id=ctx.agent_id if ctx else None,
+        task_id=ctx.task_id if ctx else None,
+        mission_id=ctx.mission_id if ctx else None,
         risk_level="high" if cost > 1.0 else "medium",
     )
 
@@ -94,12 +96,11 @@ def _record_approval_intervention(
     This tracks escalations - where Sentinel paused and asked a human.
     """
     from .intervention import InterventionTracker, InterventionType, InterventionOutcome
-    from .cost import CostTracker
     from .compliance import ApprovalStatus
-    
-    # Get current run context
-    run_id = CostTracker._current_run_id if hasattr(CostTracker, '_current_run_id') else None
-    
+
+    # Get current context for attribution
+    ctx = ExecutionContext.current()
+
     # Determine outcome based on approval status
     if approval_response.status == ApprovalStatus.APPROVED:
         outcome = InterventionOutcome.APPROVED_AFTER_REVIEW
@@ -113,7 +114,7 @@ def _record_approval_intervention(
         outcome = InterventionOutcome.ESCALATED
         actual_cost = 0.0
         reason = f"Action required approval, status: {approval_response.status}"
-    
+
     # Record the intervention
     InterventionTracker.record(
         intervention_type=InterventionType.APPROVAL_REQUIRED,
@@ -123,7 +124,9 @@ def _record_approval_intervention(
         actual_cost=actual_cost,
         reason=reason,
         original_inputs={"args": args, "kwargs": kwargs},
-        run_id=run_id,
+        agent_id=ctx.agent_id if ctx else None,
+        task_id=ctx.task_id if ctx else None,
+        mission_id=ctx.mission_id if ctx else None,
         risk_level="medium",
         context={
             "approver_email": approval_response.approver_email,
@@ -138,7 +141,10 @@ def guarded_action(
     cost_usd: float = 0.0,
     tags: Optional[list[str]] = None,
     requires_human_approval: bool = False,
-    approval_description: Optional[str] = None
+    approval_description: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    mission_id: Optional[str] = None,
 ):
     """
     Decorator to wrap an agent action (tool call, API request) with
@@ -199,6 +205,7 @@ def guarded_action(
             return await _execute_async(
                 func, action_name, cost_usd, tags, 
                 requires_human_approval, description,
+                agent_id, task_id, mission_id,
                 *args, **kwargs
             )
 
@@ -207,6 +214,7 @@ def guarded_action(
             return _execute_sync(
                 func, action_name, cost_usd, tags,
                 requires_human_approval, description,
+                agent_id, task_id, mission_id,
                 *args, **kwargs
             )
 
@@ -222,32 +230,42 @@ async def _execute_async(
     tags: Optional[list[str]],
     requires_approval: bool,
     approval_description: str,
+    agent_id: Optional[str],
+    task_id: Optional[str],
+    mission_id: Optional[str],
     *args,
     **kwargs
 ):
     """
     Execute an async function with timing and error tracking.
-    
+
     This handles:
     1. Pre-execution: Human approval (if required) and policy checks
     2. Execution: Await the async function with timing (or use replay)
     3. Post-execution: Record cost and telemetry (even on failure)
     """
+    # Resolve attribution from ExecutionContext if not set explicitly
+    agent_id = agent_id or ExecutionContext.get_agent_id()
+    task_id = task_id or ExecutionContext.get_task_id()
+    mission_id = mission_id or ExecutionContext.get_mission_id()
+
     # Phase 4: Check if replay mode is active
     from .replay import ReplayMode
     
     if ReplayMode.is_active():
         # In replay mode, return recorded output instead of executing
         replay = ReplayMode.get_active()
+        if replay is None:
+            raise RuntimeError("Replay mode is active but no replay instance found")
         inputs = {"args": args, "kwargs": kwargs}
-        
+
         try:
-            recorded_output, inputs_match = replay.get_next_output(action_name, inputs)
+            recorded_output, _inputs_match = replay.get_next_output(action_name, inputs)
             
             # Record that we replayed this action
             _safe_log(
                 action_name, args, kwargs, recorded_output, None,
-                cost, 0.0, "replayed", tags or []
+                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id
             )
             
             return recorded_output
@@ -306,7 +324,14 @@ async def _execute_async(
     
     # Set compliance metadata for the action context
     set_compliance_metadata(compliance_metadata)
-    
+
+    # Kill switch check (fail-open: only blocks when kill is confirmed)
+    from .kill_switch import KillSwitchClient
+    if KillSwitchClient.is_configured():
+        KillSwitchClient.check_or_raise(
+            agent_id=agent_id, mission_id=mission_id
+        )
+
     # Phase 2: Check policy BEFORE execution
     # This may raise BudgetExceededError or PolicyViolationError
     try:
@@ -314,10 +339,10 @@ async def _execute_async(
     except (BudgetExceededError, PolicyViolationError) as e:
         # Log the policy violation but don't record cost (action didn't run)
         logger.warning(f"Policy blocked action '{action_name}': {e}")
-        
+
         # Record the intervention (core value proposition)
         _record_policy_intervention(action_name, cost, e, args, kwargs)
-        
+
         clear_compliance_metadata()
         raise
     
@@ -353,7 +378,14 @@ async def _execute_async(
         
         _safe_log(
             action_name, args, kwargs, result, error_message,
-            cost, duration_ms, outcome, tags, compliance_dict
+            cost,
+            duration_ms,
+            outcome,
+            tags,
+            compliance_dict,
+            agent_id,
+            task_id,
+            mission_id,
         )
         
         # Clear compliance metadata after logging
@@ -367,32 +399,42 @@ def _execute_sync(
     tags: Optional[list[str]],
     requires_approval: bool,
     approval_description: str,
+    agent_id: Optional[str],
+    task_id: Optional[str],
+    mission_id: Optional[str],
     *args,
     **kwargs
 ):
     """
     Execute a sync function with timing and error tracking.
-    
+
     This handles:
     1. Pre-execution: Human approval (if required) and policy checks
     2. Execution: Call the sync function with timing (or use replay)
     3. Post-execution: Record cost and telemetry (even on failure)
     """
+    # Resolve attribution from ExecutionContext if not set explicitly
+    agent_id = agent_id or ExecutionContext.get_agent_id()
+    task_id = task_id or ExecutionContext.get_task_id()
+    mission_id = mission_id or ExecutionContext.get_mission_id()
+
     # Phase 4: Check if replay mode is active
     from .replay import ReplayMode
     
     if ReplayMode.is_active():
         # In replay mode, return recorded output instead of executing
         replay = ReplayMode.get_active()
+        if replay is None:
+            raise RuntimeError("Replay mode is active but no replay instance found")
         inputs = {"args": args, "kwargs": kwargs}
-        
+
         try:
-            recorded_output, inputs_match = replay.get_next_output(action_name, inputs)
+            recorded_output, _inputs_match = replay.get_next_output(action_name, inputs)
             
             # Record that we replayed this action
             _safe_log(
                 action_name, args, kwargs, recorded_output, None,
-                cost, 0.0, "replayed", tags or []
+                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id
             )
             
             return recorded_output
@@ -451,7 +493,14 @@ def _execute_sync(
     
     # Set compliance metadata for the action context
     set_compliance_metadata(compliance_metadata)
-    
+
+    # Kill switch check (fail-open: only blocks when kill is confirmed)
+    from .kill_switch import KillSwitchClient
+    if KillSwitchClient.is_configured():
+        KillSwitchClient.check_or_raise(
+            agent_id=agent_id, mission_id=mission_id
+        )
+
     # Phase 2: Check policy BEFORE execution
     # This may raise BudgetExceededError or PolicyViolationError
     try:
@@ -459,10 +508,10 @@ def _execute_sync(
     except (BudgetExceededError, PolicyViolationError) as e:
         # Log the policy violation but don't record cost (action didn't run)
         logger.warning(f"Policy blocked action '{action_name}': {e}")
-        
+
         # Record the intervention (core value proposition)
         _record_policy_intervention(action_name, cost, e, args, kwargs)
-        
+
         clear_compliance_metadata()
         raise
     
@@ -498,7 +547,14 @@ def _execute_sync(
         
         _safe_log(
             action_name, args, kwargs, result, error_message,
-            cost, duration_ms, outcome, tags, compliance_dict
+            cost,
+            duration_ms,
+            outcome,
+            tags,
+            compliance_dict,
+            agent_id,
+            task_id,
+            mission_id,
         )
         
         # Clear compliance metadata after logging
@@ -515,7 +571,10 @@ def _safe_log(
     duration: float,
     outcome: str,
     tags: Optional[list[str]],
-    compliance_metadata: Optional[dict] = None
+    compliance_metadata: Optional[dict] = None,
+    agent_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    mission_id: Optional[str] = None,
 ):
     """
     Isolate the logging logic to ensure fail-open behavior.
@@ -544,7 +603,10 @@ def _safe_log(
             duration_ms=duration,
             outcome=outcome,
             tags=tags or [],
-            compliance_metadata=compliance_metadata
+            compliance_metadata=compliance_metadata,
+            agent_id=agent_id,
+            task_id=task_id,
+            mission_id=mission_id,
         )
     except Exception as e:
         # FAIL-OPEN: Log to stderr but never crash the agent

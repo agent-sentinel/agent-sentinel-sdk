@@ -133,7 +133,10 @@ class Ledger:
         duration_ms: float, 
         outcome: str,
         tags: list[str],
-        compliance_metadata: Optional[Dict[str, Any]] = None
+        compliance_metadata: Optional[Dict[str, Any]] = None,
+        agent_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        mission_id: Optional[str] = None,
     ):
         """
         Appends a structured log entry to the local JSONL file.
@@ -185,6 +188,12 @@ class Ledger:
         # Phase 5: Add compliance metadata if present (Enterprise Tier)
         if compliance_metadata:
             entry["compliance_metadata"] = compliance_metadata
+        if agent_id is not None:
+            entry["agent_id"] = agent_id
+        if task_id is not None:
+            entry["task_id"] = task_id
+        if mission_id is not None:
+            entry["mission_id"] = mission_id
 
         try:
             # We use 'a' (append) mode. 

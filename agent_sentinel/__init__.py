@@ -3,6 +3,7 @@ from __future__ import annotations
 from .guard import guarded_action
 from .errors import (
     AgentSentinelError,
+    AgentKilledError,
     BudgetExceededError,
     PolicyViolationError,
     ReplayDivergenceError,
@@ -20,7 +21,7 @@ from .retry import (
 from .ledger import Ledger
 from .cost import CostTracker
 from .policy import PolicyEngine, PolicyConfig
-from .sync import BackgroundSync, SyncConfig, enable_remote_sync, flush_and_stop
+from .sync import BackgroundSync, ManualSync, SyncConfig, enable_remote_sync, manual_flush, flush_and_stop
 from .replay import ReplayMode, ReplayEntry, replay_mode
 from .compliance import (
     # Core classes
@@ -50,6 +51,12 @@ from .approval import (
     RiskLevel,
     ApprovalConfig,
 )
+
+# Execution Context (runtime attribution)
+from .context import ExecutionContext
+
+# Kill Switch (emergency shutdown)
+from .kill_switch import KillSwitchClient
 
 # Interventions (CRITICAL - Core Value Proposition)
 from .intervention import (
@@ -89,6 +96,7 @@ __version__ = "0.1.0"
 __all__ = [
     "guarded_action",
     "AgentSentinelError",
+    "AgentKilledError",
     "BudgetExceededError",
     "PolicyViolationError",
     "ReplayDivergenceError",
@@ -105,9 +113,15 @@ __all__ = [
     "PolicyEngine",
     "PolicyConfig",
     "BackgroundSync",
+    "ManualSync",
     "SyncConfig",
     "enable_remote_sync",
+    "manual_flush",
     "flush_and_stop",
+    # Execution Context
+    "ExecutionContext",
+    # Kill Switch
+    "KillSwitchClient",
     "ReplayMode",
     "ReplayEntry",
     "replay_mode",
