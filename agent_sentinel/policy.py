@@ -830,7 +830,18 @@ class PolicyEngine:
                     required_prior_actions=required,
                     stale_evidence=stale,
                 )
-    
+
+        # 7. Check argument constraints
+        if action in config.argument_constraints and kwargs:
+            from .constraints import validate_constraints
+            violations = validate_constraints(kwargs, config.argument_constraints[action])
+            if violations:
+                raise EvidenceViolationError(
+                    message=f"Action '{action}' argument constraints violated: {violations}",
+                    action_name=action,
+                    argument_violations=violations,
+                )
+
     @classmethod
     def get_config(cls) -> Optional[PolicyConfig]:
         """
