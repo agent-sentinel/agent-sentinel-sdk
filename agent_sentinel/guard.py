@@ -684,114 +684,17 @@ def _execute_sync(
             # If replay fails, log and re-raise
             logger.error(f"Replay failed for '{action_name}': {e}")
             raise
-    
-    # Phase 5: Human-in-the-loop approval (EU AI Act Article 14)
+
     from .compliance import (
-        HumanApprovalHandler, 
-        ComplianceMetadata, 
+        HumanApprovalHandler,
+        ComplianceMetadata,
         ApprovalStatus,
         set_compliance_metadata,
         clear_compliance_metadata
     )
-    
+
     compliance_metadata = ComplianceMetadata()
     approval_response = None
-
-    # Check decorator-level approval (legacy HumanApprovalHandler)
-    if requires_approval:
-        compliance_metadata.requires_human_approval = True
-        compliance_metadata.approval_status = ApprovalStatus.PENDING
-
-        try:
-            approval_response = HumanApprovalHandler.request_approval_sync(
-                action_name=action_name,
-                action_description=approval_description,
-                inputs={"args": args, "kwargs": kwargs},
-                cost=cost
-            )
-
-            compliance_metadata.approval_status = approval_response.status
-            compliance_metadata.human_in_the_loop_id = approval_response.approver_id
-            compliance_metadata.human_in_the_loop_email = approval_response.approver_email
-            compliance_metadata.approval_timestamp = approval_response.approved_at
-            compliance_metadata.approval_notes = approval_response.notes
-            _record_approval_intervention(action_name, cost, approval_response, args, kwargs)
-
-            if approval_response.status != ApprovalStatus.APPROVED:
-                logger.warning(f"Action '{action_name}' not approved: {approval_response.status}")
-                status_str = approval_response.status.value if hasattr(approval_response.status, "value") else str(approval_response.status)
-                _safe_log(
-                    action_name, args, kwargs, None,
-                    f"Approval {status_str}: {approval_response.notes or approval_response.status}",
-                    cost, 0.0, "rejected" if status_str == "rejected" else "blocked", tags,
-                    compliance_metadata.to_dict() if compliance_metadata else None,
-                    agent_id, task_id, mission_id,
-                )
-                clear_compliance_metadata()
-                raise PolicyViolationError(
-                    f"Human approval required but status is: {approval_response.status}"
-                )
-
-        except RuntimeError as e:
-            logger.error(f"Human approval required but no handler configured for '{action_name}'")
-            raise PolicyViolationError(str(e))
-
-    # Check platform policy-based approval (ApprovalClient)
-    elif PolicyEngine.requires_approval(action_name, cost=cost, tags=tags, risk_level=risk_level):
-        compliance_metadata.requires_human_approval = True
-        compliance_metadata.approval_status = ApprovalStatus.PENDING
-
-        if not ApprovalClient.is_configured():
-            raise PolicyViolationError(
-                f"Platform policy requires approval for '{action_name}' but ApprovalClient is not configured. "
-                "Call ApprovalClient.configure() with platform_url and api_token."
-            )
-
-        ctx = ExecutionContext.current()
-        platform_resp = ApprovalClient.request_approval_sync(
-            action_name=action_name,
-            action_description=approval_description,
-            agent_id=agent_id or (ctx.agent_id if ctx else None),
-            run_id=getattr(ctx, "run_id", None) if ctx else None,
-            task_id=task_id or (ctx.task_id if ctx else None),
-            mission_id=mission_id or (ctx.mission_id if ctx else None),
-            estimated_cost=cost,
-            timeout_seconds=PolicyEngine.get_approval_timeout(),
-            action_inputs={"args": [str(a) for a in args], "kwargs": {k: str(v) for k, v in kwargs.items()}},
-            context={"tags": tags or [], "risk_level": risk_level},
-        )
-
-        # Map platform ApprovalStatus to compliance ApprovalStatus for metadata
-        status_str = platform_resp.status.value if hasattr(platform_resp.status, "value") else str(platform_resp.status)
-        try:
-            compliance_metadata.approval_status = ApprovalStatus(status_str)
-        except ValueError:
-            compliance_metadata.approval_status = ApprovalStatus.PENDING
-        compliance_metadata.human_in_the_loop_email = platform_resp.decided_by_email
-        compliance_metadata.approval_timestamp = platform_resp.decided_at
-        compliance_metadata.approval_notes = platform_resp.decision_notes
-
-        # Adapt platform response for _record_approval_intervention (duck-typed)
-        approval_response = _PlatformApprovalAdapter(platform_resp)
-        _record_approval_intervention(action_name, cost, approval_response, args, kwargs)
-
-        if status_str != "approved":
-            logger.warning(f"Action '{action_name}' not approved by platform: {platform_resp.status}")
-            outcome = "rejected" if status_str == "rejected" else "blocked"
-            _safe_log(
-                action_name, args, kwargs, None,
-                f"Approval {status_str}: {platform_resp.decision_notes or platform_resp.status}",
-                cost, 0.0, outcome, tags,
-                compliance_metadata.to_dict() if compliance_metadata else None,
-                agent_id, task_id, mission_id,
-            )
-            clear_compliance_metadata()
-            raise PolicyViolationError(
-                f"Platform approval required but status is: {platform_resp.status}"
-            )
-
-    # Set compliance metadata for the action context
-    set_compliance_metadata(compliance_metadata)
 
     # Kill switch check (fail-open: only blocks when kill is confirmed)
     from .kill_switch import KillSwitchClient
@@ -800,18 +703,27 @@ def _execute_sync(
             agent_id=agent_id, mission_id=mission_id
         )
 
-    # Phase 2: Check policy BEFORE execution (includes evidence requirements from policy)
+    # Hard blocks FIRST — deny lists, budgets, evidence, constraints, groundedness.
+    # These take priority over approval (no point approving a blocked action).
     try:
         PolicyEngine.check_action(action_name, cost, kwargs=kwargs)
     except EvidenceViolationError as e:
         logger.warning(f"Evidence requirement blocked action '{action_name}': {e}")
         _record_evidence_intervention(action_name, cost, e, args, kwargs)
-        clear_compliance_metadata()
+        _safe_log(
+            action_name, args, kwargs, None, str(e),
+            cost, 0.0, "blocked", tags or [],
+            None, agent_id, task_id, mission_id,
+        )
         raise
     except (BudgetExceededError, PolicyViolationError) as e:
         logger.warning(f"Policy blocked action '{action_name}': {e}")
         _record_policy_intervention(action_name, cost, e, args, kwargs)
-        clear_compliance_metadata()
+        _safe_log(
+            action_name, args, kwargs, None, str(e),
+            cost, 0.0, "blocked", tags or [],
+            None, agent_id, task_id, mission_id,
+        )
         raise
 
     # Decorator-level evidence requirement check
@@ -829,11 +741,9 @@ def _execute_sync(
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
             _safe_log(
                 action_name, args, kwargs, None, str(error),
-                cost, 0.0, "blocked", tags,
-                compliance_metadata.to_dict() if compliance_metadata else None,
-                agent_id, task_id, mission_id,
+                cost, 0.0, "blocked", tags or [],
+                None, agent_id, task_id, mission_id,
             )
-            clear_compliance_metadata()
             raise error
 
     # Decorator-level groundedness check
@@ -859,11 +769,9 @@ def _execute_sync(
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
             _safe_log(
                 action_name, args, kwargs, None, str(error),
-                cost, 0.0, "blocked", tags,
-                compliance_metadata.to_dict() if compliance_metadata else None,
-                agent_id, task_id, mission_id,
+                cost, 0.0, "blocked", tags or [],
+                None, agent_id, task_id, mission_id,
             )
-            clear_compliance_metadata()
             raise error
 
     # Decorator-level argument constraint check
@@ -882,11 +790,83 @@ def _execute_sync(
             _safe_log(
                 action_name, args, kwargs, None, str(error),
                 cost, 0.0, "blocked", tags,
-                compliance_metadata.to_dict() if compliance_metadata else None,
-                agent_id, task_id, mission_id,
+                None, agent_id, task_id, mission_id,
             )
-            clear_compliance_metadata()
             raise error
+
+    # Approval check — only reached if all hard blocks passed
+    if requires_approval:
+        compliance_metadata.requires_human_approval = True
+        compliance_metadata.approval_status = ApprovalStatus.PENDING
+
+        try:
+            approval_response = HumanApprovalHandler.request_approval_sync(
+                action_name=action_name,
+                action_description=approval_description,
+                inputs={"args": args, "kwargs": kwargs},
+                cost=cost
+            )
+
+            compliance_metadata.approval_status = approval_response.status
+            compliance_metadata.human_in_the_loop_id = approval_response.approver_id
+            compliance_metadata.human_in_the_loop_email = approval_response.approver_email
+            compliance_metadata.approval_timestamp = approval_response.approved_at
+            compliance_metadata.approval_notes = approval_response.notes
+            _record_approval_intervention(action_name, cost, approval_response, args, kwargs)
+
+            if approval_response.status != ApprovalStatus.APPROVED:
+                logger.warning(f"Action '{action_name}' not approved: {approval_response.status}")
+                raise PolicyViolationError(
+                    f"Human approval required but status is: {approval_response.status}"
+                )
+
+        except RuntimeError as e:
+            logger.error(f"Human approval required but no handler configured for '{action_name}'")
+            raise PolicyViolationError(str(e))
+
+    elif PolicyEngine.requires_approval(action_name, cost=cost, tags=tags, risk_level=risk_level):
+        compliance_metadata.requires_human_approval = True
+        compliance_metadata.approval_status = ApprovalStatus.PENDING
+
+        if not ApprovalClient.is_configured():
+            raise PolicyViolationError(
+                f"Platform policy requires approval for '{action_name}' but ApprovalClient is not configured. "
+                "Call ApprovalClient.configure() with platform_url and api_token."
+            )
+
+        ctx = ExecutionContext.current()
+        platform_resp = ApprovalClient.request_approval_sync(
+            action_name=action_name,
+            action_description=approval_description,
+            agent_id=agent_id or (ctx.agent_id if ctx else None),
+            run_id=getattr(ctx, "run_id", None) if ctx else None,
+            task_id=task_id or (ctx.task_id if ctx else None),
+            mission_id=mission_id or (ctx.mission_id if ctx else None),
+            estimated_cost=cost,
+            timeout_seconds=PolicyEngine.get_approval_timeout(),
+            action_inputs={"args": [str(a) for a in args], "kwargs": {k: str(v) for k, v in kwargs.items()}},
+            context={"tags": tags or [], "risk_level": risk_level},
+        )
+
+        status_str = platform_resp.status.value if hasattr(platform_resp.status, "value") else str(platform_resp.status)
+        try:
+            compliance_metadata.approval_status = ApprovalStatus(status_str)
+        except ValueError:
+            compliance_metadata.approval_status = ApprovalStatus.PENDING
+        compliance_metadata.human_in_the_loop_email = platform_resp.decided_by_email
+        compliance_metadata.approval_timestamp = platform_resp.decided_at
+        compliance_metadata.approval_notes = platform_resp.decision_notes
+
+        approval_response = _PlatformApprovalAdapter(platform_resp)
+        _record_approval_intervention(action_name, cost, approval_response, args, kwargs)
+
+        if status_str != "approved":
+            logger.warning(f"Action '{action_name}' not approved by platform: {platform_resp.status}")
+            raise PolicyViolationError(
+                f"Platform approval required but status is: {platform_resp.status}"
+            )
+
+    set_compliance_metadata(compliance_metadata)
 
     start_ns = time.perf_counter_ns()
     outcome = "success"
