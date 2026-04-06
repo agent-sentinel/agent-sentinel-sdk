@@ -27,7 +27,7 @@ from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field
 
 from .cost import CostTracker
-from .errors import BudgetExceededError, PolicyViolationError
+from .errors import BudgetExceededError, PolicyViolationError, EvidenceViolationError
 
 logger = logging.getLogger("agent_sentinel")
 
@@ -81,6 +81,13 @@ class PolicyConfig:
     approval_actions: List[str] = field(default_factory=list)
     approval_threshold_usd: Optional[float] = None
     approval_timeout_seconds: int = 3600
+    # Evidence graph settings (action correctness enforcement)
+    evidence_requirements: Dict[str, List[str]] = field(default_factory=dict)
+    evidence_max_age_seconds: Dict[str, int] = field(default_factory=dict)
+    commit_actions: List[str] = field(default_factory=list)
+    evidence_actions: List[str] = field(default_factory=list)
+    argument_constraints: Dict[str, dict] = field(default_factory=dict)
+    grounding_rules: Dict[str, Dict[str, Dict[str, str]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -290,11 +297,17 @@ class PolicyEngine:
         denied_actions: Optional[List[str]] = None,
         allowed_actions: Optional[List[str]] = None,
         rate_limits: Optional[Dict[str, Dict[str, int]]] = None,
-        strict_mode: bool = True
+        strict_mode: bool = True,
+        evidence_requirements: Optional[Dict[str, List[str]]] = None,
+        evidence_max_age_seconds: Optional[Dict[str, int]] = None,
+        commit_actions: Optional[List[str]] = None,
+        evidence_actions: Optional[List[str]] = None,
+        argument_constraints: Optional[Dict[str, dict]] = None,
+        grounding_rules: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None,
     ) -> None:
         """
         Configure policy engine programmatically.
-        
+
         Args:
             session_budget: Max USD for entire session
             run_budget: Max USD for current run
@@ -303,6 +316,11 @@ class PolicyEngine:
             allowed_actions: If set, allowlist mode (only these permitted)
             rate_limits: Dict of action -> {"max_count": N, "window_seconds": M}
             strict_mode: If True, violations stop execution
+            evidence_requirements: Dict of action -> list of required prior actions
+            evidence_max_age_seconds: Dict of action -> max evidence age in seconds
+            commit_actions: List of state-changing commit actions
+            evidence_actions: List of evidence-producing actions
+            argument_constraints: Dict of action -> JSON Schema for argument validation
         """
         cls._config = PolicyConfig(
             session_budget=session_budget,
@@ -311,7 +329,13 @@ class PolicyEngine:
             denied_actions=denied_actions or [],
             allowed_actions=allowed_actions,
             rate_limits=rate_limits or {},
-            strict_mode=strict_mode
+            strict_mode=strict_mode,
+            evidence_requirements=evidence_requirements or {},
+            evidence_max_age_seconds=evidence_max_age_seconds or {},
+            commit_actions=commit_actions or [],
+            evidence_actions=evidence_actions or [],
+            argument_constraints=argument_constraints or {},
+            grounding_rules=grounding_rules or {},
         )
         cls._initialized = True
         logger.info("Policy engine configured programmatically")
@@ -396,7 +420,16 @@ class PolicyEngine:
             allowed_actions = data.get("allowed_actions")
             rate_limits = data.get("rate_limits", {})
             strict_mode = data.get("strict_mode", True)
-            
+
+            # Parse evidence graph settings
+            evidence = data.get("evidence", {})
+            evidence_requirements = evidence.get("requirements", {})
+            evidence_max_age_seconds = evidence.get("max_age_seconds", {})
+            commit_actions = evidence.get("commit_actions", [])
+            evidence_actions = evidence.get("evidence_actions", [])
+            argument_constraints = evidence.get("argument_constraints", {})
+            grounding_rules = evidence.get("grounding_rules", {})
+
             cls.configure(
                 session_budget=session_budget,
                 run_budget=run_budget,
@@ -404,7 +437,13 @@ class PolicyEngine:
                 denied_actions=denied_actions,
                 allowed_actions=allowed_actions,
                 rate_limits=rate_limits,
-                strict_mode=strict_mode
+                strict_mode=strict_mode,
+                evidence_requirements=evidence_requirements,
+                evidence_max_age_seconds=evidence_max_age_seconds,
+                commit_actions=commit_actions,
+                evidence_actions=evidence_actions,
+                argument_constraints=argument_constraints,
+                grounding_rules=grounding_rules,
             )
             
             logger.info(f"Policy engine loaded from {config_path}")
@@ -622,6 +661,46 @@ class PolicyEngine:
             # Approval timeout (use the policy's timeout)
             if policy.get("approval_timeout_seconds"):
                 cls._config.approval_timeout_seconds = policy["approval_timeout_seconds"]
+
+            # Merge evidence requirements (union of all requirements per action)
+            if policy.get("evidence_requirements"):
+                for action, required in policy["evidence_requirements"].items():
+                    if action not in cls._config.evidence_requirements:
+                        cls._config.evidence_requirements[action] = list(required)
+                    else:
+                        cls._config.evidence_requirements[action] = list(set(
+                            cls._config.evidence_requirements[action] + required
+                        ))
+
+            # Merge evidence max age (most restrictive = minimum)
+            if policy.get("evidence_max_age_seconds"):
+                for action, max_age in policy["evidence_max_age_seconds"].items():
+                    if action not in cls._config.evidence_max_age_seconds:
+                        cls._config.evidence_max_age_seconds[action] = max_age
+                    else:
+                        cls._config.evidence_max_age_seconds[action] = min(
+                            cls._config.evidence_max_age_seconds[action], max_age
+                        )
+
+            # Merge commit/evidence action lists (union)
+            if policy.get("commit_actions"):
+                cls._config.commit_actions = list(set(
+                    cls._config.commit_actions + policy["commit_actions"]
+                ))
+            if policy.get("evidence_actions"):
+                cls._config.evidence_actions = list(set(
+                    cls._config.evidence_actions + policy["evidence_actions"]
+                ))
+
+            # Merge argument constraints (per-action, last policy wins)
+            if policy.get("argument_constraints"):
+                for action, constraints in policy["argument_constraints"].items():
+                    cls._config.argument_constraints[action] = constraints
+
+            # Merge grounding rules (per-action, last policy wins)
+            if policy.get("grounding_rules"):
+                for action, rules in policy["grounding_rules"].items():
+                    cls._config.grounding_rules[action] = rules
     
     @classmethod
     def _start_background_sync(cls) -> None:
@@ -666,46 +745,48 @@ class PolicyEngine:
         return cls._initialized and cls._config is not None
     
     @classmethod
-    def check_action(cls, action: str, cost: float) -> None:
+    def check_action(cls, action: str, cost: float, kwargs: Optional[Dict[str, Any]] = None) -> None:
         """
         Check if an action is permitted under current policy.
-        
+
         This is called BEFORE the action executes. If any policy is
         violated, raises an exception to prevent execution.
-        
+
         Args:
             action: Name of the action to check
             cost: Proposed cost of the action in USD
-        
+            kwargs: Optional action arguments (for evidence and argument constraint checks)
+
         Raises:
             PolicyViolationError: If action is denied or rate limit exceeded
             BudgetExceededError: If budget would be exceeded
+            EvidenceViolationError: If required evidence is missing or stale
         """
         # If not configured, allow everything (fail-open)
         if not cls.is_configured():
             return
-        
+
         config = cls._config
-        
+
         # 1. Check denied/allowed lists
         if action in config.denied_actions:
             raise PolicyViolationError(
                 f"Action '{action}' is on the denied list"
             )
-        
+
         if config.allowed_actions and action not in config.allowed_actions:
             raise PolicyViolationError(
                 f"Action '{action}' is not on the allowed list. "
                 f"Permitted: {config.allowed_actions}"
             )
-        
+
         # 2. Check rate limits
         if action in config.rate_limits:
             limits = config.rate_limits[action]
             max_count = limits.get("max_count", 999999)
             window_seconds = limits.get("window_seconds", 60)
             cls._rate_limiter.check_rate_limit(action, max_count, window_seconds)
-        
+
         # 3. Check session budget
         if config.session_budget is not None:
             current_session = CostTracker.get_session_total()
@@ -717,7 +798,7 @@ class PolicyEngine:
                     limit=config.session_budget,
                     budget_type="session"
                 )
-        
+
         # 4. Check run budget
         if config.run_budget is not None:
             current_run = CostTracker.get_run_total()
@@ -729,13 +810,13 @@ class PolicyEngine:
                     limit=config.run_budget,
                     budget_type="run"
                 )
-        
+
         # 5. Check action-specific budget
         if action in config.action_budgets:
             action_limit = config.action_budgets[action]
             action_stats = CostTracker.get_action_stats(action)
             action_total = action_stats["total_cost"]
-            
+
             if action_total + cost > action_limit:
                 raise BudgetExceededError(
                     f"Action '{action}' budget exceeded: {action_total:.4f} + {cost:.4f} "
@@ -744,7 +825,55 @@ class PolicyEngine:
                     limit=action_limit,
                     budget_type="action"
                 )
-    
+
+        # 6. Check evidence requirements
+        if action in config.evidence_requirements:
+            from .evidence import EvidenceTracker
+            required = config.evidence_requirements[action]
+            max_age = config.evidence_max_age_seconds.get(action)
+            all_met, missing, stale = EvidenceTracker.check_requirements(required, max_age)
+            if not all_met:
+                raise EvidenceViolationError(
+                    message=f"Action '{action}' requires evidence from: {missing + stale}",
+                    action_name=action,
+                    missing_requirements=missing,
+                    required_prior_actions=required,
+                    stale_evidence=stale,
+                )
+
+        # 7. Check argument constraints
+        if action in config.argument_constraints and kwargs:
+            from .constraints import validate_constraints
+            violations = validate_constraints(kwargs, config.argument_constraints[action])
+            if violations:
+                raise EvidenceViolationError(
+                    message=f"Action '{action}' argument constraints violated: {violations}",
+                    action_name=action,
+                    argument_violations=violations,
+                )
+
+        # 8. Check groundedness
+        if action in config.grounding_rules and kwargs:
+            from .evidence import EvidenceTracker
+            grounded, ungrounded_details = EvidenceTracker.check_groundedness(
+                action_kwargs=kwargs,
+                grounding_rules=config.grounding_rules[action],
+                max_age_seconds=config.evidence_max_age_seconds.get(action),
+            )
+            if not grounded:
+                field_names = [d["field"] for d in ungrounded_details]
+                error = EvidenceViolationError(
+                    message=f"Action '{action}' arguments not grounded in evidence: {field_names}",
+                    action_name=action,
+                    argument_violations=[
+                        f"'{d['field']}' value '{d['actual_value']}' not found in {d['expected_source']}"
+                        for d in ungrounded_details
+                    ],
+                    retry_guidance=f"Ensure these arguments match prior evidence: {field_names}",
+                )
+                error.remediation.reason_code = "UNGROUNDED_ARGUMENT"
+                raise error
+
     @classmethod
     def get_config(cls) -> Optional[PolicyConfig]:
         """

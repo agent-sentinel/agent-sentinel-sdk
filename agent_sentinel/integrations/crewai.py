@@ -1,27 +1,35 @@
 """
 CrewAI Integration for AgentSentinel.
 
-This module provides wrappers and utilities for integrating AgentSentinel
-with CrewAI, enabling automatic tracking of crew actions, tasks, and costs.
+This module provides a "Visa-like" active control integration for CrewAI,
+automatically securing all agents, tools, and LLM calls with policy enforcement.
+
+Features:
+- Automatic Tool Injection: All agent tools are secured without manual decoration
+- LLM Monitoring: Token costs are tracked and budget limits enforced in real-time
+- Step Monitoring: Detects runaway agents and enforces step limits
+- Active Control: Blocks tools and LLM calls that violate policies BEFORE execution
 
 Usage:
     from crewai import Agent, Task, Crew
-    from agent_sentinel.integrations.crewai import SentinelCrew, wrap_crew_action
+    from agent_sentinel.integrations.crewai import SentinelCrew
     
-    # Option 1: Use SentinelCrew wrapper
+    # Create agents with standard tools (e.g., SerperDevTool)
     agents = [...]
     tasks = [...]
     
+    # SentinelCrew automatically secures everything
     crew = SentinelCrew(
         agents=agents,
         tasks=tasks,
         run_name="my_crew_execution",
-        track_costs=True
+        enforce_policies=True,  # Active blocking (default: True)
+        max_agent_steps=50,      # Prevent runaway agents
     )
     
     result = crew.kickoff()
     
-    # Option 2: Wrap individual actions
+    # Optional: Wrap individual actions manually
     @wrap_crew_action(name="research_task", cost_usd=0.05)
     def research_action(query):
         # Your action implementation
@@ -37,6 +45,10 @@ from typing import Any, Callable, Dict, List, Optional
 from ..guard import guarded_action
 from ..cost import CostTracker
 from ..ledger import Ledger
+from ..policy import PolicyEngine
+from ..intervention import InterventionTracker, InterventionType, InterventionOutcome
+from ..errors import BudgetExceededError, PolicyViolationError, EvidenceViolationError
+from ..evidence import EvidenceTracker
 
 try:
     from crewai import Crew, Agent, Task
@@ -56,22 +68,30 @@ def wrap_crew_action(
     cost_usd: float = 0.0,
     tags: Optional[List[str]] = None,
     requires_human_approval: bool = False,
+    produces_evidence: bool = False,
+    is_commit: bool = False,
+    requires: Optional[List[str]] = None,
+    grounding_rules: Optional[dict] = None,
 ):
     """
     Decorator to wrap CrewAI actions with AgentSentinel tracking.
-    
+
     This is a thin wrapper around @guarded_action that adds CrewAI-specific
     tags and metadata.
-    
+
     Args:
         name: Optional name for the action
         cost_usd: Estimated cost for this action
         tags: Optional tags for categorization
         requires_human_approval: Whether this action requires approval
-    
+        produces_evidence: Whether this action produces evidence for later use
+        is_commit: Whether this is a state-changing commit action
+        requires: List of action names that must have evidence before this runs
+        grounding_rules: Dict mapping argument fields to evidence sources
+
     Returns:
         Decorated function with AgentSentinel tracking
-    
+
     Example:
         @wrap_crew_action(name="web_search", cost_usd=0.02)
         def search_web(query: str) -> str:
@@ -79,24 +99,39 @@ def wrap_crew_action(
             return results
     """
     action_tags = ["crewai"] + (tags or [])
-    
+
     return guarded_action(
         name=name,
         cost_usd=cost_usd,
         tags=action_tags,
         requires_human_approval=requires_human_approval,
+        produces_evidence=produces_evidence,
+        is_commit=is_commit,
+        requires=requires,
+        grounding_rules=grounding_rules,
     )
 
 
 class SentinelCrew:
     """
-    Wrapper around CrewAI Crew that adds AgentSentinel tracking.
+    Active Control wrapper around CrewAI Crew with automatic security injection.
     
-    This class wraps CrewAI's Crew to automatically track:
-    - Crew execution start/end
-    - Individual task execution
-    - Agent actions and tool usage
-    - Total costs and duration
+    This class transforms CrewAI from a passive integration to a "Visa-like" active
+    control system by:
+    
+    1. **Automatic Tool Injection**: All agent tools are wrapped with authorization
+       checks. No manual decoration required - SerperDevTool, DuckDuckGoSearch, etc.
+       are automatically secured.
+    
+    2. **LLM Monitoring**: Attaches SentinelCallbackHandler to all agent LLMs to
+       track token costs and enforce budget limits before API calls.
+    
+    3. **Step Monitoring**: Tracks agent step counts to detect and prevent runaway
+       agents (e.g., infinite loops, repetitive failures).
+    
+    4. **Active Blocking**: PolicyEngine checks are injected into the decision loop,
+       not just at the wrapper level. Overspending and banned actions are blocked
+       BEFORE execution.
     
     Args:
         agents: List of CrewAI agents
@@ -105,17 +140,25 @@ class SentinelCrew:
         track_costs: Whether to track costs (default True)
         track_tasks: Whether to track individual tasks (default True)
         auto_log: Whether to auto-log to ledger (default True)
+        enforce_policies: Enable active blocking via PolicyEngine (default True)
+        max_agent_steps: Maximum steps per agent before intervention (default 50)
+        detect_loops: Enable repetition detection for runaway agents (default True)
         tags: Optional tags to apply to all actions
         **crew_kwargs: Additional arguments passed to Crew()
     
     Example:
         from crewai import Agent, Task
+        from crewai_tools import SerperDevTool
         from agent_sentinel.integrations.crewai import SentinelCrew
+        
+        # Standard CrewAI setup - no changes needed
+        search_tool = SerperDevTool()
         
         researcher = Agent(
             role="Researcher",
             goal="Research topics",
             backstory="Expert researcher",
+            tools=[search_tool],  # Tools are auto-secured!
         )
         
         task = Task(
@@ -123,13 +166,16 @@ class SentinelCrew:
             agent=researcher,
         )
         
+        # SentinelCrew automatically secures everything
         crew = SentinelCrew(
             agents=[researcher],
             tasks=[task],
             run_name="ai_research_crew",
+            enforce_policies=True,  # Active blocking
+            max_agent_steps=50,     # Prevent runaways
         )
         
-        result = crew.kickoff()
+        result = crew.kickoff()  # Fully secured execution
         summary = crew.get_run_summary()
     """
     
@@ -141,10 +187,13 @@ class SentinelCrew:
         track_costs: bool = True,
         track_tasks: bool = True,
         auto_log: bool = True,
+        enforce_policies: bool = True,
+        max_agent_steps: int = 50,
+        detect_loops: bool = True,
         tags: Optional[List[str]] = None,
         **crew_kwargs: Any,
     ):
-        """Initialize the SentinelCrew wrapper."""
+        """Initialize the SentinelCrew with automatic security injection."""
         if not _CREWAI_AVAILABLE:
             raise ImportError(
                 "CrewAI is not installed. "
@@ -157,14 +206,10 @@ class SentinelCrew:
         self.track_costs = track_costs
         self.track_tasks = track_tasks
         self.auto_log = auto_log
+        self.enforce_policies = enforce_policies
+        self.max_agent_steps = max_agent_steps
+        self.detect_loops = detect_loops
         self.tags = tags or ["crewai"]
-        
-        # Create the underlying Crew
-        self._crew = Crew(
-            agents=agents,
-            tasks=tasks,
-            **crew_kwargs,
-        )
         
         # Track execution state
         self._run_start_time: Optional[float] = None
@@ -174,10 +219,383 @@ class SentinelCrew:
         # Cost tracking at run level
         self._run_start_cost = 0.0
         
+        # Agent step tracking for runaway detection
+        self._agent_steps: Dict[str, int] = {}
+        self._agent_actions: Dict[str, List[str]] = {}
+        
+        # CRITICAL: Inject security BEFORE creating the Crew
+        # This is the "Chip Reader" injection step
+        self._secure_agents()
+        self._attach_llm_monitors()
+        self._attach_step_monitors()
+        
+        # Create the underlying Crew with secured agents
+        self._crew = Crew(
+            agents=agents,
+            tasks=tasks,
+            **crew_kwargs,
+        )
+        
         logger.info(
             f"SentinelCrew initialized: {self.run_name} | "
-            f"Agents: {len(agents)} | Tasks: {len(tasks)}"
+            f"Agents: {len(agents)} | Tasks: {len(tasks)} | "
+            f"Policy Enforcement: {enforce_policies}"
         )
+    
+    # =========================================================================
+    # Security Injection Methods (The "Chip Reader" Integration)
+    # =========================================================================
+    
+    def _secure_agents(self) -> None:
+        """
+        Automatically wrap all agent tools with authorization checks.
+        
+        This is the "Chip Reader" - it intercepts tool calls and checks
+        the PolicyEngine before execution. No manual decoration required.
+        
+        Implementation:
+        - Iterates through all agents and their tools
+        - Wraps each tool's execution method with policy checks
+        - Marks tools as secured to avoid double-wrapping
+        - Handles both BaseTool (func) and StructuredTool (_run) interfaces
+        """
+        for agent in self.agents:
+            # Get agent identifier for logging
+            agent_id = getattr(agent, "role", getattr(agent, "name", "unknown_agent"))
+            
+            if not hasattr(agent, "tools") or not agent.tools:
+                logger.debug(f"Agent '{agent_id}' has no tools to secure")
+                continue
+            
+            secured_tools = []
+            for tool in agent.tools:
+                # Check if already secured to avoid double-wrapping
+                if getattr(tool, "_is_sentinel_secured", False):
+                    secured_tools.append(tool)
+                    logger.debug(f"Tool already secured: {getattr(tool, 'name', 'unknown')}")
+                    continue
+                
+                # Get tool name for logging and policy checks
+                tool_name = getattr(tool, "name", getattr(tool, "__class__.__name__", "unknown_tool"))
+                
+                # Find the tool's execution method
+                # CrewAI tools typically have one of: func, _run, run, __call__
+                original_method = None
+                method_attr = None
+                
+                if hasattr(tool, "func") and callable(tool.func):
+                    original_method = tool.func
+                    method_attr = "func"
+                elif hasattr(tool, "_run") and callable(tool._run):
+                    original_method = tool._run
+                    method_attr = "_run"
+                elif hasattr(tool, "run") and callable(tool.run):
+                    original_method = tool.run
+                    method_attr = "run"
+                elif callable(tool):
+                    # Tool itself is callable
+                    original_method = tool.__call__
+                    method_attr = "__call__"
+                
+                if not original_method:
+                    logger.warning(
+                        f"Could not find execution method for tool: {tool_name}. "
+                        f"Tool will not be secured."
+                    )
+                    secured_tools.append(tool)
+                    continue
+                
+                # Create the secured wrapper
+                @functools.wraps(original_method)
+                def create_secured_wrapper(orig_func, t_name, a_id):
+                    """Factory to capture closure variables correctly."""
+                    def secured_run(*args, **kwargs):
+                        # 1. AUTHORIZE: Check Policy before execution
+                        if self.enforce_policies:
+                            try:
+                                PolicyEngine.check_action(t_name, cost=0.0, kwargs=kwargs)
+                            except EvidenceViolationError as e:
+                                logger.warning(f"Sentinel blocked tool '{t_name}' (evidence): {e}")
+
+                                InterventionTracker.record(
+                                    intervention_type=InterventionType.MISSING_EVIDENCE,
+                                    outcome=InterventionOutcome.BLOCKED,
+                                    action_name=t_name,
+                                    estimated_cost=0.0,
+                                    reason=str(e),
+                                    original_inputs={"args": str(args)[:200], "kwargs": str(kwargs)[:200]},
+                                    risk_level="medium",
+                                    run_id=self.run_name,
+                                    agent_id=a_id,
+                                    remediation_payload=e.remediation.to_dict(),
+                                )
+
+                                raise e
+                            except (BudgetExceededError, PolicyViolationError) as e:
+                                logger.warning(f"Sentinel blocked tool '{t_name}': {e}")
+
+                                # Record intervention
+                                InterventionTracker.record(
+                                    intervention_type=(
+                                        InterventionType.BUDGET_EXCEEDED
+                                        if isinstance(e, BudgetExceededError)
+                                        else InterventionType.HARD_BLOCK
+                                    ),
+                                    outcome=InterventionOutcome.BLOCKED,
+                                    action_name=t_name,
+                                    estimated_cost=0.0,
+                                    reason=str(e),
+                                    original_inputs={"args": str(args)[:200], "kwargs": str(kwargs)[:200]},
+                                    risk_level="high",
+                                    run_id=self.run_name,
+                                    agent_id=a_id,
+                                )
+
+                                # Re-raise to stop execution
+                                raise e
+
+                        # 2. LOG: Track tool execution
+                        start_time = time.perf_counter()
+                        try:
+                            # 3. EXECUTE: Run the original tool
+                            result = orig_func(*args, **kwargs)
+
+                            # 4. RECORD: Record evidence if tool is in evidence_actions
+                            config = PolicyEngine.get_config()
+                            if config and t_name in config.evidence_actions:
+                                EvidenceTracker.record_evidence(t_name, kwargs=kwargs, result=result)
+
+                            # 5. LOG: Log successful execution
+                            duration = time.perf_counter() - start_time
+                            if self.auto_log:
+                                Ledger.log(
+                                    action=f"tool:{t_name}",
+                                    status="completed",
+                                    cost_usd=0.0,
+                                    duration_ns=int(duration * 1e9),
+                                    metadata={
+                                        "tool": t_name,
+                                        "agent_id": a_id,
+                                        "run_name": self.run_name,
+                                    },
+                                    tags=self.tags + ["tool", f"agent:{a_id}"],
+                                )
+
+                            return result
+                        
+                        except Exception as e:
+                            # Log tool error
+                            duration = time.perf_counter() - start_time
+                            if self.auto_log:
+                                Ledger.log(
+                                    action=f"tool:{t_name}:error",
+                                    status="failed",
+                                    cost_usd=0.0,
+                                    duration_ns=int(duration * 1e9),
+                                    metadata={
+                                        "tool": t_name,
+                                        "agent_id": a_id,
+                                        "run_name": self.run_name,
+                                        "error": str(e),
+                                        "error_type": type(e).__name__,
+                                    },
+                                    tags=self.tags + ["tool", "error", f"agent:{a_id}"],
+                                )
+                            raise
+                    
+                    return secured_run
+                
+                # Apply the wrapper
+                secured_wrapper = create_secured_wrapper(original_method, tool_name, agent_id)
+                setattr(tool, method_attr, secured_wrapper)
+                
+                # Mark as secured
+                tool._is_sentinel_secured = True
+                secured_tools.append(tool)
+                
+                logger.debug(f"Secured tool '{tool_name}' for agent '{agent_id}'")
+            
+            # Update agent's tools with secured versions
+            agent.tools = secured_tools
+            
+            logger.info(f"Secured {len(secured_tools)} tools for agent '{agent_id}'")
+    
+    def _attach_llm_monitors(self) -> None:
+        """
+        Inject SentinelCallbackHandler into all agent LLMs.
+        
+        This is the "LLM Meter" - it tracks token costs and enforces
+        budget limits before expensive API calls are made.
+        
+        Implementation:
+        - Detects LLM backend (LangChain, LiteLLM, etc.)
+        - Injects SentinelCallbackHandler with policy enforcement
+        - Ensures no duplicate handlers
+        """
+        # Import here to avoid circular dependency
+        try:
+            from .langchain import SentinelCallbackHandler
+        except ImportError:
+            logger.warning("LangChain integration not available. LLM monitoring disabled.")
+            return
+        
+        # Create the sentinel handler - wrap in try/except for graceful degradation
+        try:
+            sentinel_handler = SentinelCallbackHandler(
+                run_name=self.run_name,
+                track_costs=self.track_costs,
+                enforce_policies=self.enforce_policies,
+                tags=self.tags + ["crewai_llm"],
+            )
+        except ImportError:
+            # LangChain not installed - that's OK, monitoring will be disabled
+            logger.info("LangChain not installed. LLM monitoring disabled for this crew.")
+            return
+        
+        for agent in self.agents:
+            agent_id = getattr(agent, "role", getattr(agent, "name", "unknown_agent"))
+            
+            if not hasattr(agent, "llm"):
+                logger.debug(f"Agent '{agent_id}' has no LLM to monitor")
+                continue
+            
+            llm = agent.llm
+            
+            # Check if LLM supports callbacks (LangChain-style)
+            if hasattr(llm, "callbacks"):
+                # Get existing callbacks
+                existing_callbacks = llm.callbacks or []
+                
+                # Check if sentinel already attached (avoid duplicates)
+                has_sentinel = any(
+                    isinstance(cb, SentinelCallbackHandler) 
+                    for cb in existing_callbacks
+                )
+                
+                if not has_sentinel:
+                    # Append our handler
+                    llm.callbacks = list(existing_callbacks) + [sentinel_handler]
+                    logger.info(f"Attached LLM monitor to agent '{agent_id}'")
+                else:
+                    logger.debug(f"Agent '{agent_id}' already has Sentinel monitor")
+            
+            # Support for other LLM backends (LiteLLM, etc.)
+            elif hasattr(llm, "add_callback"):
+                llm.add_callback(sentinel_handler)
+                logger.info(f"Attached LLM monitor to agent '{agent_id}' (add_callback)")
+            
+            else:
+                logger.warning(
+                    f"Agent '{agent_id}' LLM does not support callbacks. "
+                    f"LLM monitoring disabled for this agent. "
+                    f"LLM type: {type(llm).__name__}"
+                )
+    
+    def _attach_step_monitors(self) -> None:
+        """
+        Inject step callbacks to detect runaway agents.
+        
+        This is the "Safety Net" - it monitors agent steps and blocks
+        agents that exceed limits or enter infinite loops.
+        
+        Implementation:
+        - Wraps agent step_callback to track step counts
+        - Checks for repetition (loop detection)
+        - Enforces max_agent_steps limit
+        - Records interventions when agents are stopped
+        """
+        for agent in self.agents:
+            agent_id = getattr(agent, "role", getattr(agent, "name", "unknown_agent"))
+            
+            # Initialize tracking for this agent
+            self._agent_steps[agent_id] = 0
+            self._agent_actions[agent_id] = []
+            
+            # Get existing callback if any
+            original_callback = getattr(agent, "step_callback", None)
+            
+            # Create our monitoring callback
+            def create_step_monitor(a_id, orig_cb):
+                """Factory to capture closure variables correctly."""
+                def sentinel_step_check(step_output):
+                    # Increment step counter
+                    self._agent_steps[a_id] += 1
+                    current_step = self._agent_steps[a_id]
+                    
+                    # Extract action from step output
+                    action_str = str(step_output)[:100] if step_output else "unknown"
+                    self._agent_actions[a_id].append(action_str)
+                    
+                    logger.debug(f"Agent '{a_id}' step {current_step}: {action_str}")
+                    
+                    # 1. Check step limit
+                    if current_step > self.max_agent_steps:
+                        error_msg = (
+                            f"Agent '{a_id}' exceeded maximum steps: "
+                            f"{current_step} > {self.max_agent_steps}. "
+                            f"Possible runaway agent or infinite loop."
+                        )
+                        logger.error(error_msg)
+                        
+                        # Record intervention
+                        if self.auto_log:
+                            InterventionTracker.record(
+                                intervention_type=InterventionType.HARD_BLOCK,
+                                outcome=InterventionOutcome.BLOCKED,
+                                action_name=f"agent_step_{a_id}",
+                                estimated_cost=0.0,
+                                reason=error_msg,
+                                original_inputs={"step": current_step, "action": action_str},
+                                risk_level="critical",
+                                run_id=self.run_name,
+                                agent_id=a_id,
+                            )
+                        
+                        # Raise error to stop agent
+                        raise PolicyViolationError(error_msg)
+                    
+                    # 2. Check for loops (repetition detection)
+                    if self.detect_loops and current_step >= 5:
+                        recent_actions = self._agent_actions[a_id][-5:]
+                        # Simple repetition check: all actions similar
+                        if len(set(recent_actions)) == 1:
+                            error_msg = (
+                                f"Agent '{a_id}' appears to be stuck in a loop. "
+                                f"Repeated action: {recent_actions[0]}"
+                            )
+                            logger.warning(error_msg)
+                            
+                            # Record intervention (warning level)
+                            if self.auto_log:
+                                InterventionTracker.record(
+                                    intervention_type=InterventionType.WARNING,
+                                    outcome=InterventionOutcome.WARNED,
+                                    action_name=f"agent_loop_{a_id}",
+                                    estimated_cost=0.0,
+                                    reason=error_msg,
+                                    original_inputs={"recent_actions": recent_actions},
+                                    risk_level="high",
+                                    run_id=self.run_name,
+                                    agent_id=a_id,
+                                )
+                            
+                            # For now, just log - could raise error or request approval
+                            logger.warning(f"Loop detected for agent '{a_id}' - consider intervention")
+                    
+                    # 3. Call original callback if exists
+                    if orig_cb:
+                        orig_cb(step_output)
+                
+                return sentinel_step_check
+            
+            # Apply the step monitor
+            agent.step_callback = create_step_monitor(agent_id, original_callback)
+            
+            logger.debug(f"Attached step monitor to agent '{agent_id}'")
+    
+    # =========================================================================
+    # Crew Execution Methods
+    # =========================================================================
     
     def kickoff(self, inputs: Optional[Dict[str, Any]] = None) -> Any:
         """

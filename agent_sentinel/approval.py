@@ -13,7 +13,7 @@ import logging
 import time
 import threading
 from typing import Optional, Any, Dict
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
@@ -64,6 +64,8 @@ class ApprovalRequest:
     action_description: str | None = None
     agent_id: str | None = None
     run_id: str | None = None
+    task_id: str | None = None
+    mission_id: str | None = None
     estimated_cost: float = 0.0
     risk_level: RiskLevel = RiskLevel.MEDIUM
     priority: ApprovalPriority = ApprovalPriority.MEDIUM
@@ -80,6 +82,8 @@ class ApprovalRequest:
             "action_description": self.action_description,
             "agent_id": self.agent_id,
             "run_id": self.run_id,
+            "task_id": self.task_id,
+            "mission_id": self.mission_id,
             "estimated_cost": self.estimated_cost,
             "risk_level": self.risk_level.value,
             "priority": self.priority.value,
@@ -465,6 +469,8 @@ class ApprovalClient:
         action_description: str | None = None,
         agent_id: str | None = None,
         run_id: str | None = None,
+        task_id: str | None = None,
+        mission_id: str | None = None,
         estimated_cost: float = 0.0,
         risk_level: RiskLevel = RiskLevel.MEDIUM,
         priority: ApprovalPriority = ApprovalPriority.MEDIUM,
@@ -504,6 +510,8 @@ class ApprovalClient:
             action_description=action_description,
             agent_id=agent_id,
             run_id=run_id,
+            task_id=task_id,
+            mission_id=mission_id,
             estimated_cost=estimated_cost,
             risk_level=risk_level,
             priority=priority,
@@ -511,7 +519,7 @@ class ApprovalClient:
             action_inputs=action_inputs,
             context=context,
         )
-        
+
         # Submit the request
         approval_id = cls.submit_request(request)
         
@@ -584,6 +592,8 @@ class ApprovalClient:
         action_description: str | None = None,
         agent_id: str | None = None,
         run_id: str | None = None,
+        task_id: str | None = None,
+        mission_id: str | None = None,
         estimated_cost: float = 0.0,
         risk_level: RiskLevel = RiskLevel.MEDIUM,
         priority: ApprovalPriority = ApprovalPriority.MEDIUM,
@@ -593,18 +603,20 @@ class ApprovalClient:
     ) -> ApprovalResponse:
         """
         Request approval asynchronously.
-        
+
         Same as request_approval_sync but uses async/await.
         """
         import asyncio
-        
+
         timeout = timeout_seconds or cls._config.default_timeout if cls._config else 3600
-        
+
         request = ApprovalRequest(
             action_name=action_name,
             action_description=action_description,
             agent_id=agent_id,
             run_id=run_id,
+            task_id=task_id,
+            mission_id=mission_id,
             estimated_cost=estimated_cost,
             risk_level=risk_level,
             priority=priority,

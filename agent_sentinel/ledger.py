@@ -133,7 +133,10 @@ class Ledger:
         duration_ms: float, 
         outcome: str,
         tags: list[str],
-        compliance_metadata: Optional[Dict[str, Any]] = None
+        compliance_metadata: Optional[Dict[str, Any]] = None,
+        agent_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        mission_id: Optional[str] = None,
     ):
         """
         Appends a structured log entry to the local JSONL file.
@@ -185,6 +188,12 @@ class Ledger:
         # Phase 5: Add compliance metadata if present (Enterprise Tier)
         if compliance_metadata:
             entry["compliance_metadata"] = compliance_metadata
+        if agent_id is not None:
+            entry["agent_id"] = agent_id
+        if task_id is not None:
+            entry["task_id"] = task_id
+        if mission_id is not None:
+            entry["mission_id"] = mission_id
 
         try:
             # We use 'a' (append) mode. 
@@ -199,6 +208,45 @@ class Ledger:
             # Last line of defense: if disk is full or file is locked.
             # We drop the log entry rather than crashing the user's agent.
             logger.error(f"Agent Sentinel Drop: {e}")
+    
+    @classmethod
+    def log(
+        cls,
+        action: str,
+        status: str,
+        cost_usd: float,
+        duration_ns: int,
+        metadata: Optional[Dict[str, Any]] = None,
+        tags: Optional[list[str]] = None,
+    ) -> None:
+        """
+        Simplified logging interface for integrations.
+        
+        This is a convenience method that wraps record() with a simpler API
+        commonly used by framework integrations.
+        
+        Args:
+            action: Name of the action
+            status: Status string (e.g., "completed", "failed", "started")
+            cost_usd: Cost in USD
+            duration_ns: Duration in nanoseconds
+            metadata: Optional metadata dict
+            tags: Optional tags list
+        """
+        # Convert to the format expected by record()
+        duration_ms = duration_ns / 1_000_000.0  # Convert ns to ms
+        outcome = "success" if status in ("completed", "success") else "error"
+        
+        cls.record(
+            action=action,
+            inputs=metadata or {},
+            outputs={"status": status},
+            cost_usd=cost_usd,
+            duration_ms=duration_ms,
+            outcome=outcome,
+            tags=tags or [],
+            compliance_metadata=None,
+        )
     
     @classmethod
     def get_log_path(cls) -> Optional[Path]:

@@ -18,7 +18,6 @@ import uuid
 import random
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timezone
 
 try:
     import httpx
@@ -27,8 +26,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from .ledger import Ledger
-from .errors import NetworkError, SyncError, ConfigurationError
-from .retry import RetryConfig, with_retry
+from .errors import NetworkError, SyncError
 from .intervention import InterventionTracker
 
 logger = logging.getLogger("agent_sentinel")
@@ -42,6 +40,7 @@ class SyncConfig:
         platform_url: str,
         api_token: str,
         run_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         flush_interval: float = 10.0,
         batch_size: int = 100,
         max_retries: int = 3,
@@ -49,11 +48,12 @@ class SyncConfig:
     ):
         """
         Configure sync to platform.
-        
+
         Args:
             platform_url: Base URL of platform (e.g. "https://api.agentsentinel.dev")
             api_token: JWT token or API key for authentication
             run_id: UUID for this agent run (auto-generated if None)
+            agent_id: Stable agent identifier for discovery (optional)
             flush_interval: Seconds between flushes (default 10)
             batch_size: Max entries per batch (default 100)
             max_retries: Max retry attempts per batch (default 3)
@@ -62,6 +62,7 @@ class SyncConfig:
         self.platform_url = platform_url.rstrip("/")
         self.api_token = api_token
         self.run_id = run_id or str(uuid.uuid4())
+        self.agent_id = agent_id
         self.flush_interval = flush_interval
         self.batch_size = batch_size
         self.max_retries = max_retries
@@ -352,6 +353,8 @@ class BackgroundSync:
             "run_id": self.config.run_id,
             "entries": entries,
         }
+        if self.config.agent_id:
+            payload["agent_id"] = self.config.agent_id
         
         # Retry with exponential backoff
         last_error = None
@@ -502,6 +505,53 @@ class BackgroundSync:
         return min(base_wait + jitter, 10.0)
 
 
+class ManualSync:
+    """
+    Sync without background threads. Caller controls when data is flushed.
+
+    Use cases: serverless functions, workflow activities, CLI tools,
+    any context where daemon threads are inappropriate or unavailable.
+
+    Usage::
+
+        sync = ManualSync(SyncConfig(
+            platform_url="https://api.agentsentinel.dev",
+            api_token="your-api-key",
+        ))
+
+        # ... run guarded actions ...
+
+        sync.flush()  # blocking, uploads everything accumulated so far
+    """
+
+    def __init__(self, config: SyncConfig):
+        if not HTTPX_AVAILABLE:
+            logger.warning(
+                "httpx not installed. ManualSync disabled. "
+                "Install with: pip install agent-sentinel[remote]"
+            )
+            config.enabled = False
+
+        self.config = config
+        # Delegate to a BackgroundSync instance but never start its thread
+        self._inner = BackgroundSync(config)
+
+    def flush(self) -> None:
+        """
+        Upload all new ledger entries and interventions to platform.
+
+        Blocks until complete. Safe to call from any execution context
+        (no background threads are created).
+        """
+        if not self.config.enabled:
+            return
+
+        try:
+            self._inner._flush_once()
+        except Exception as e:
+            logger.error(f"ManualSync flush failed: {e}")
+
+
 # Global sync instance (optional - users can manage their own)
 _global_sync: Optional[BackgroundSync] = None
 
@@ -510,43 +560,33 @@ def enable_remote_sync(
     platform_url: str,
     api_token: str,
     run_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
     flush_interval: float = 10.0,
     auto_start: bool = True,
 ) -> BackgroundSync:
     """
     Enable remote sync to platform (convenience function).
-    
+
     This configures and starts a global background sync instance.
-    
+
     Args:
         platform_url: Base URL of platform
         api_token: JWT token or API key
         run_id: Optional run ID (auto-generated if None)
+        agent_id: Stable agent identifier for discovery
         flush_interval: Seconds between flushes
         auto_start: Start sync immediately
-    
+
     Returns:
         BackgroundSync instance
-    
-    Example:
-        from agent_sentinel import enable_remote_sync
-        
-        sync = enable_remote_sync(
-            platform_url="https://api.agentsentinel.dev",
-            api_token="your-jwt-token",
-        )
-        
-        # Use your agent - logs are synced automatically
-        
-        # At exit:
-        sync.stop()
     """
     global _global_sync
-    
+
     config = SyncConfig(
         platform_url=platform_url,
         api_token=api_token,
         run_id=run_id,
+        agent_id=agent_id,
         flush_interval=flush_interval,
     )
     
@@ -571,11 +611,36 @@ def get_sync() -> Optional[BackgroundSync]:
 def flush_and_stop() -> None:
     """
     Flush remaining logs and stop global sync.
-    
+
     Call this before your agent exits to ensure all logs are uploaded.
     """
     global _global_sync
     if _global_sync:
         _global_sync.stop()
         _global_sync = None
+
+
+def manual_flush(
+    platform_url: str,
+    api_token: str,
+    run_id: Optional[str] = None,
+) -> None:
+    """
+    One-shot flush of all pending ledger entries and interventions.
+
+    Creates a ManualSync, flushes, and discards. No threads are started.
+    Useful at the end of a short-lived process or activity.
+
+    Args:
+        platform_url: Base URL of platform
+        api_token: JWT token or API key
+        run_id: Optional run ID (auto-generated if None)
+    """
+    config = SyncConfig(
+        platform_url=platform_url,
+        api_token=api_token,
+        run_id=run_id,
+    )
+    sync = ManualSync(config)
+    sync.flush()
 

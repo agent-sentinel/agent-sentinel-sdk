@@ -4,6 +4,9 @@ Example: LangChain Integration with AgentSentinel
 This example demonstrates how to use the SentinelCallbackHandler
 to automatically track LangChain chains, agents, and LLM costs.
 
+For advanced features including policy enforcement, intervention recording,
+and async support, see: langchain_policy_enforcement.py
+
 Requirements:
     pip install agent-sentinel[remote] langchain langchain-openai openai
 """
