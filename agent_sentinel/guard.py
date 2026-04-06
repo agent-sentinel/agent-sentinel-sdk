@@ -807,6 +807,12 @@ def _execute_sync(
     except (BudgetExceededError, PolicyViolationError) as e:
         logger.warning(f"Policy blocked action '{action_name}': {e}")
         _record_policy_intervention(action_name, cost, e, args, kwargs)
+        _safe_log(
+            action_name, args, kwargs, None, str(e),
+            cost, 0.0, "blocked", tags or [],
+            compliance_metadata.to_dict() if compliance_metadata else None,
+            agent_id, task_id, mission_id,
+        )
         clear_compliance_metadata()
         raise
 
