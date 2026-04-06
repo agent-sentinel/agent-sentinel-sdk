@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
 import random
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +47,7 @@ class SyncConfig:
         batch_size: int = 100,
         max_retries: int = 3,
         enabled: bool = True,
+        local_retention_hours: int = 24,
     ):
         """
         Configure sync to platform.
@@ -58,6 +61,8 @@ class SyncConfig:
             batch_size: Max entries per batch (default 100)
             max_retries: Max retry attempts per batch (default 3)
             enabled: Enable/disable sync (default True)
+            local_retention_hours: Hours to keep unsynced entries locally before
+                purging. Synced entries are removed immediately. Default 24h.
         """
         self.platform_url = platform_url.rstrip("/")
         self.api_token = api_token
@@ -67,6 +72,7 @@ class SyncConfig:
         self.batch_size = batch_size
         self.max_retries = max_retries
         self.enabled = enabled
+        self.local_retention_hours = local_retention_hours
 
 
 class BackgroundSync:
@@ -220,16 +226,19 @@ class BackgroundSync:
         uploaded = 0
         for i in range(0, len(entries), self.config.batch_size):
             batch = entries[i:i + self.config.batch_size]
-            
+
             if self._upload_batch(batch):
                 uploaded += len(batch)
                 self._last_sync_offset += len(batch)
             else:
                 # Stop on first failed batch (will retry next interval)
                 break
-        
+
         if uploaded > 0:
             logger.info(f"Synced {uploaded} ledger entries to platform")
+            # Remove uploaded lines and purge stale unsynced ones, then reset offset
+            self._compact_file(ledger_path, self._last_sync_offset)
+            self._last_sync_offset = 0
     
     def _sync_interventions(self) -> None:
         """
@@ -269,16 +278,19 @@ class BackgroundSync:
         uploaded = 0
         for i in range(0, len(interventions), self.config.batch_size):
             batch = interventions[i:i + self.config.batch_size]
-            
+
             if self._upload_intervention_batch(batch):
                 uploaded += len(batch)
                 self._last_intervention_sync_offset += len(batch)
             else:
                 # Stop on first failed batch (will retry next interval)
                 break
-        
+
         if uploaded > 0:
             logger.info(f"Synced {uploaded} interventions to platform")
+            # Remove uploaded lines and purge stale unsynced ones, then reset offset
+            self._compact_file(intervention_file, self._last_intervention_sync_offset)
+            self._last_intervention_sync_offset = 0
     
     def _upload_intervention_batch(self, interventions: list[dict]) -> bool:
         """
@@ -489,6 +501,59 @@ class BackgroundSync:
         with httpx.Client(timeout=10.0, follow_redirects=True) as client:
             return client.post(url, json=payload, headers=headers)
     
+    def _compact_file(self, file_path: Path, synced_up_to_line: int) -> None:
+        """
+        Rewrite a JSONL file removing synced entries and entries older than
+        local_retention_hours.
+
+        Lines below synced_up_to_line have been confirmed uploaded and are
+        always removed. Lines at or above that index are kept only if their
+        timestamp is within the retention window — this purges entries that
+        could never be synced (e.g. persistent platform outage).
+
+        Uses an atomic rename so a crash mid-write never leaves a truncated
+        file. After compaction _last_sync_offset should be reset to 0 by the
+        caller.
+
+        Note: there is an accepted, tiny race window where lines appended by
+        Ledger.record() between our file-read and the rename may be lost.
+        This is the standard logrotate trade-off for a telemetry buffer.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=self.config.local_retention_hours)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            kept = []
+            for i, line in enumerate(lines):
+                if i < synced_up_to_line:
+                    continue  # Already uploaded — drop unconditionally
+                if not line.strip():
+                    continue  # Drop blank lines
+                # Retain if timestamp is recent or unparseable (safe default)
+                try:
+                    ts_str = json.loads(line).get("timestamp", "")
+                    ts = datetime.fromisoformat(ts_str)
+                    if ts < cutoff:
+                        logger.debug(f"Purging stale local entry from {ts_str}")
+                        continue
+                except Exception:
+                    pass  # Unparseable — keep it
+                kept.append(line)
+
+            # Atomic rewrite via temp file then rename
+            tmp_path = file_path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.writelines(kept)
+            os.replace(tmp_path, file_path)  # Atomic on POSIX and Windows
+
+            removed = len(lines) - len(kept)
+            if removed:
+                logger.debug(f"Compacted {file_path.name}: removed {removed} entries, {len(kept)} remaining")
+
+        except Exception as e:
+            logger.error(f"Failed to compact {file_path.name}: {e}")
+
     def _calculate_backoff(self, attempt: int) -> float:
         """
         Calculate exponential backoff with jitter.
