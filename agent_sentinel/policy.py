@@ -79,6 +79,8 @@ class PolicyConfig:
     # Approval Inbox settings
     require_approval: bool = False
     approval_actions: List[str] = field(default_factory=list)
+    approval_tags: List[str] = field(default_factory=list)
+    approval_risk_levels: List[str] = field(default_factory=list)
     approval_threshold_usd: Optional[float] = None
     approval_timeout_seconds: int = 3600
     # Evidence graph settings (action correctness enforcement)
@@ -647,7 +649,19 @@ class PolicyEngine:
                 cls._config.approval_actions = list(set(
                     cls._config.approval_actions + policy["approval_actions"]
                 ))
-            
+
+            # Merge approval tags (union)
+            if policy.get("approval_tags"):
+                cls._config.approval_tags = list(set(
+                    cls._config.approval_tags + policy["approval_tags"]
+                ))
+
+            # Merge approval risk levels (union)
+            if policy.get("approval_risk_levels"):
+                cls._config.approval_risk_levels = list(set(
+                    cls._config.approval_risk_levels + policy["approval_risk_levels"]
+                ))
+
             # Approval threshold (most restrictive - lowest threshold)
             if policy.get("approval_threshold_usd") is not None:
                 if cls._config.approval_threshold_usd is None:
@@ -885,40 +899,61 @@ class PolicyEngine:
         return cls._config
     
     @classmethod
-    def requires_approval(cls, action: str, cost: float) -> bool:
+    def requires_approval(
+        cls,
+        action: str,
+        cost: float,
+        tags: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+    ) -> bool:
         """
         Check if an action requires human approval.
-        
+
         Args:
             action: Name of the action
             cost: Cost of the action in USD
-        
+            tags: Tags associated with the action
+            risk_level: Risk level of the action (e.g. "LOW", "MEDIUM", "HIGH", "CRITICAL")
+
         Returns:
             True if human approval is required
         """
         if not cls.is_configured():
             return False
-        
+
         config = cls._config
-        
+
         # Check if approval is enabled
         if not config.require_approval:
             return False
-        
+
         # Check if this specific action requires approval
         if config.approval_actions and action in config.approval_actions:
             return True
-        
+
+        # Check if any of the action's tags match approval_tags
+        if config.approval_tags and tags:
+            if any(t in config.approval_tags for t in tags):
+                return True
+
+        # Check if the action's risk level matches approval_risk_levels
+        if config.approval_risk_levels and risk_level:
+            if risk_level.upper() in [r.upper() for r in config.approval_risk_levels]:
+                return True
+
         # Check if cost exceeds threshold
         if config.approval_threshold_usd is not None:
             if cost >= config.approval_threshold_usd:
                 return True
-        
-        # If no specific actions listed and no threshold, 
+
+        # If no specific criteria configured,
         # require_approval=True means all actions need approval
-        if not config.approval_actions and config.approval_threshold_usd is None:
+        if (not config.approval_actions
+            and not config.approval_tags
+            and not config.approval_risk_levels
+            and config.approval_threshold_usd is None):
             return True
-        
+
         return False
     
     @classmethod

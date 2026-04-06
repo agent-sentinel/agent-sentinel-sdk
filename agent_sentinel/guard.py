@@ -243,7 +243,7 @@ def guarded_action(
                 agent_id, task_id, mission_id,
                 produces_evidence, is_commit, requires,
                 argument_constraints, evidence_max_age_seconds,
-                grounding_rules,
+                grounding_rules, risk_level,
                 *args, **kwargs
             )
 
@@ -255,7 +255,7 @@ def guarded_action(
                 agent_id, task_id, mission_id,
                 produces_evidence, is_commit, requires,
                 argument_constraints, evidence_max_age_seconds,
-                grounding_rules,
+                grounding_rules, risk_level,
                 *args, **kwargs
             )
 
@@ -294,6 +294,7 @@ async def _execute_async(
     argument_constraints: Optional[dict],
     evidence_max_age_seconds: Optional[int],
     grounding_rules: Optional[dict],
+    risk_level: Optional[str] = None,
     *args,
     **kwargs
 ):
@@ -348,10 +349,17 @@ async def _execute_async(
     compliance_metadata = ComplianceMetadata()
     approval_response = None
     
-    if requires_approval:
+    # Check decorator-level approval OR platform policy-based approval
+    needs_approval = requires_approval
+    if not needs_approval:
+        needs_approval = PolicyEngine.requires_approval(
+            action_name, cost=cost, tags=tags, risk_level=risk_level
+        )
+
+    if needs_approval:
         compliance_metadata.requires_human_approval = True
         compliance_metadata.approval_status = ApprovalStatus.PENDING
-        
+
         try:
             # Request human approval
             approval_response = await HumanApprovalHandler.request_approval_async(
@@ -360,29 +368,29 @@ async def _execute_async(
                 inputs={"args": args, "kwargs": kwargs},
                 cost=cost
             )
-            
+
             # Update compliance metadata with approval result
             compliance_metadata.approval_status = approval_response.status
             compliance_metadata.human_in_the_loop_id = approval_response.approver_id
             compliance_metadata.human_in_the_loop_email = approval_response.approver_email
             compliance_metadata.approval_timestamp = approval_response.approved_at
             compliance_metadata.approval_notes = approval_response.notes
-            
+
             # Record the approval intervention
             _record_approval_intervention(action_name, cost, approval_response, args, kwargs)
-            
+
             # Block execution if not approved
             if approval_response.status != ApprovalStatus.APPROVED:
                 logger.warning(f"Action '{action_name}' not approved: {approval_response.status}")
                 raise PolicyViolationError(
                     f"Human approval required but status is: {approval_response.status}"
                 )
-                
+
         except RuntimeError as e:
             # No approval handler configured
             logger.error(f"Human approval required but no handler configured for '{action_name}'")
             raise PolicyViolationError(str(e))
-    
+
     # Set compliance metadata for the action context
     set_compliance_metadata(compliance_metadata)
 
@@ -530,6 +538,7 @@ def _execute_sync(
     argument_constraints: Optional[dict],
     evidence_max_age_seconds: Optional[int],
     grounding_rules: Optional[dict],
+    risk_level: Optional[str] = None,
     *args,
     **kwargs
 ):
@@ -583,11 +592,18 @@ def _execute_sync(
     
     compliance_metadata = ComplianceMetadata()
     approval_response = None
-    
-    if requires_approval:
+
+    # Check decorator-level approval OR platform policy-based approval
+    needs_approval = requires_approval
+    if not needs_approval:
+        needs_approval = PolicyEngine.requires_approval(
+            action_name, cost=cost, tags=tags, risk_level=risk_level
+        )
+
+    if needs_approval:
         compliance_metadata.requires_human_approval = True
         compliance_metadata.approval_status = ApprovalStatus.PENDING
-        
+
         try:
             # Request human approval
             approval_response = HumanApprovalHandler.request_approval_sync(
@@ -596,29 +612,29 @@ def _execute_sync(
                 inputs={"args": args, "kwargs": kwargs},
                 cost=cost
             )
-            
+
             # Update compliance metadata with approval result
             compliance_metadata.approval_status = approval_response.status
             compliance_metadata.human_in_the_loop_id = approval_response.approver_id
             compliance_metadata.human_in_the_loop_email = approval_response.approver_email
             compliance_metadata.approval_timestamp = approval_response.approved_at
             compliance_metadata.approval_notes = approval_response.notes
-            
+
             # Record the approval intervention
             _record_approval_intervention(action_name, cost, approval_response, args, kwargs)
-            
+
             # Block execution if not approved
             if approval_response.status != ApprovalStatus.APPROVED:
                 logger.warning(f"Action '{action_name}' not approved: {approval_response.status}")
                 raise PolicyViolationError(
                     f"Human approval required but status is: {approval_response.status}"
                 )
-                
+
         except RuntimeError as e:
             # No approval handler configured
             logger.error(f"Human approval required but no handler configured for '{action_name}'")
             raise PolicyViolationError(str(e))
-    
+
     # Set compliance metadata for the action context
     set_compliance_metadata(compliance_metadata)
 
