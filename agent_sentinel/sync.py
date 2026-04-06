@@ -40,6 +40,7 @@ class SyncConfig:
         platform_url: str,
         api_token: str,
         run_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         flush_interval: float = 10.0,
         batch_size: int = 100,
         max_retries: int = 3,
@@ -47,11 +48,12 @@ class SyncConfig:
     ):
         """
         Configure sync to platform.
-        
+
         Args:
             platform_url: Base URL of platform (e.g. "https://api.agentsentinel.dev")
             api_token: JWT token or API key for authentication
             run_id: UUID for this agent run (auto-generated if None)
+            agent_id: Stable agent identifier for discovery (optional)
             flush_interval: Seconds between flushes (default 10)
             batch_size: Max entries per batch (default 100)
             max_retries: Max retry attempts per batch (default 3)
@@ -60,6 +62,7 @@ class SyncConfig:
         self.platform_url = platform_url.rstrip("/")
         self.api_token = api_token
         self.run_id = run_id or str(uuid.uuid4())
+        self.agent_id = agent_id
         self.flush_interval = flush_interval
         self.batch_size = batch_size
         self.max_retries = max_retries
@@ -350,6 +353,8 @@ class BackgroundSync:
             "run_id": self.config.run_id,
             "entries": entries,
         }
+        if self.config.agent_id:
+            payload["agent_id"] = self.config.agent_id
         
         # Retry with exponential backoff
         last_error = None
@@ -555,43 +560,33 @@ def enable_remote_sync(
     platform_url: str,
     api_token: str,
     run_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
     flush_interval: float = 10.0,
     auto_start: bool = True,
 ) -> BackgroundSync:
     """
     Enable remote sync to platform (convenience function).
-    
+
     This configures and starts a global background sync instance.
-    
+
     Args:
         platform_url: Base URL of platform
         api_token: JWT token or API key
         run_id: Optional run ID (auto-generated if None)
+        agent_id: Stable agent identifier for discovery
         flush_interval: Seconds between flushes
         auto_start: Start sync immediately
-    
+
     Returns:
         BackgroundSync instance
-    
-    Example:
-        from agent_sentinel import enable_remote_sync
-        
-        sync = enable_remote_sync(
-            platform_url="https://api.agentsentinel.dev",
-            api_token="your-jwt-token",
-        )
-        
-        # Use your agent - logs are synced automatically
-        
-        # At exit:
-        sync.stop()
     """
     global _global_sync
-    
+
     config = SyncConfig(
         platform_url=platform_url,
         api_token=api_token,
         run_id=run_id,
+        agent_id=agent_id,
         flush_interval=flush_interval,
     )
     

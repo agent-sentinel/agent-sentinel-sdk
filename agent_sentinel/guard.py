@@ -179,6 +179,7 @@ def guarded_action(
     argument_constraints: Optional[dict] = None,
     evidence_max_age_seconds: Optional[int] = None,
     grounding_rules: Optional[dict] = None,
+    risk_level: Optional[str] = None,
 ):
     """
     Decorator to wrap an agent action (tool call, API request) with
@@ -447,6 +448,22 @@ async def _execute_async(
             clear_compliance_metadata()
             raise error
 
+    # Decorator-level argument constraint check
+    if argument_constraints and kwargs:
+        from .constraints import validate_constraints
+        violations = validate_constraints(kwargs, argument_constraints)
+        if violations:
+            error = EvidenceViolationError(
+                message=f"Action '{action_name}' argument constraints violated: {violations}",
+                action_name=action_name,
+                argument_violations=violations,
+                retry_guidance="Fix the argument values to satisfy constraints",
+            )
+            error.remediation.reason_code = "ARGUMENT_CONSTRAINT_VIOLATION"
+            _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            clear_compliance_metadata()
+            raise error
+
     start_ns = time.perf_counter_ns()
     outcome = "success"
     error_message = None
@@ -662,6 +679,22 @@ def _execute_sync(
                 retry_guidance=f"Ensure these arguments match prior evidence: {field_names}",
             )
             error.remediation.reason_code = "UNGROUNDED_ARGUMENT"
+            _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            clear_compliance_metadata()
+            raise error
+
+    # Decorator-level argument constraint check
+    if argument_constraints and kwargs:
+        from .constraints import validate_constraints
+        violations = validate_constraints(kwargs, argument_constraints)
+        if violations:
+            error = EvidenceViolationError(
+                message=f"Action '{action_name}' argument constraints violated: {violations}",
+                action_name=action_name,
+                argument_violations=violations,
+                retry_guidance="Fix the argument values to satisfy constraints",
+            )
+            error.remediation.reason_code = "ARGUMENT_CONSTRAINT_VIOLATION"
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
             clear_compliance_metadata()
             raise error

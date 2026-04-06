@@ -26,6 +26,7 @@ from .ledger import Ledger
 from .cost import CostTracker
 from .policy import PolicyEngine, PolicyConfig
 from .sync import BackgroundSync, ManualSync, SyncConfig, enable_remote_sync, manual_flush, flush_and_stop
+from ._configure import configure, flush
 from .replay import ReplayMode, ReplayEntry, replay_mode
 from .compliance import (
     # Core classes
@@ -127,6 +128,8 @@ __all__ = [
     "enable_remote_sync",
     "manual_flush",
     "flush_and_stop",
+    "configure",
+    "flush",
     # Execution Context
     "ExecutionContext",
     # Kill Switch

@@ -112,8 +112,8 @@ def auto_register_tools(
         "actions": tool_defs,
     }
 
-    url = f"{platform_url.rstrip('/')}/api/v1/action-registry/register"
-    headers = {"Authorization": f"Bearer {api_token}"}
+    url = f"{platform_url.rstrip('/')}/api/v1/actions/register"
+    headers = {"Authorization": f"ApiKey {api_token}"}
 
     response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
     response.raise_for_status()
