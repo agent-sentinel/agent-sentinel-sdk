@@ -238,6 +238,30 @@ class PolicyCache:
             logger.error(f"Failed to load policy cache: {e}")
             return None
     
+    def load_stale(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Load policies from cache even if expired (stale fallback).
+
+        Used when the platform is unreachable and we need any policy data.
+
+        Returns:
+            List of policy dictionaries or None if no cache exists
+        """
+        try:
+            if not self.cache_file.exists():
+                return None
+
+            with open(self.cache_file, "r") as f:
+                cache_data = json.load(f)
+
+            policies = cache_data["policies"]
+            logger.warning(f"Using stale policy cache ({len(policies)} policies) - platform unreachable")
+            return policies
+
+        except Exception as e:
+            logger.error(f"Failed to load stale policy cache: {e}")
+            return None
+
     def clear(self) -> None:
         """Clear the policy cache."""
         try:
@@ -504,19 +528,19 @@ class PolicyEngine:
     @classmethod
     def _sync_policies_once(cls) -> None:
         """
-        Sync policies once: try cache first, then remote.
+        Sync policies once: try cache first, then remote, then stale cache.
         """
         if not cls._remote_config or not cls._policy_cache:
             return
-        
+
         with cls._sync_lock:
-            # Try loading from cache first
+            # Try loading from fresh cache first
             cached_policies = cls._policy_cache.load()
             if cached_policies:
                 cls._apply_remote_policies(cached_policies)
                 logger.debug("Applied policies from cache")
                 return
-            
+
             # Cache miss or expired - fetch from platform
             policies = cls._fetch_policies_from_platform()
             if policies:
@@ -524,7 +548,12 @@ class PolicyEngine:
                 cls._apply_remote_policies(policies)
                 logger.info(f"Downloaded and applied {len(policies)} policies from platform")
             else:
-                logger.warning("Failed to fetch policies from platform")
+                # Platform unreachable — fall back to stale cache if available
+                stale = cls._policy_cache.load_stale()
+                if stale:
+                    cls._apply_remote_policies(stale)
+                else:
+                    logger.warning("Failed to fetch policies from platform and no cache available")
     
     @classmethod
     def _fetch_policies_from_platform(cls) -> Optional[List[Dict[str, Any]]]:
