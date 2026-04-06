@@ -562,29 +562,21 @@ class ApprovalClient:
                 )
                 return response
             
-            elif response.status == ApprovalStatus.REJECTED:
+            elif response.status in (
+                ApprovalStatus.REJECTED,
+                ApprovalStatus.EXPIRED,
+                ApprovalStatus.CANCELLED,
+            ):
                 logger.warning(
-                    f"Approval {approval_id} rejected: {response.decision_notes}"
+                    f"Approval {approval_id} {response.status.value}: {response.decision_notes}"
                 )
-                raise PolicyViolationError(
-                    f"Action '{action_name}' was rejected: {response.decision_notes}"
-                )
-            
-            elif response.status == ApprovalStatus.EXPIRED:
-                raise TimeoutError(
-                    f"Approval request expired for action '{action_name}'"
-                )
-            
-            elif response.status == ApprovalStatus.CANCELLED:
-                raise PolicyViolationError(
-                    f"Approval request was cancelled for action '{action_name}'"
-                )
-            
+                return response
+
             else:
                 # Unknown status - continue polling
                 logger.warning(f"Unknown approval status: {response.status}")
                 time.sleep(poll_interval)
-    
+
     @classmethod
     async def request_approval_async(
         cls,
@@ -664,24 +656,16 @@ class ApprovalClient:
                 )
                 return response
             
-            elif response.status == ApprovalStatus.REJECTED:
+            elif response.status in (
+                ApprovalStatus.REJECTED,
+                ApprovalStatus.EXPIRED,
+                ApprovalStatus.CANCELLED,
+            ):
                 logger.warning(
-                    f"Approval {approval_id} rejected: {response.decision_notes}"
+                    f"Approval {approval_id} {response.status.value}: {response.decision_notes}"
                 )
-                raise PolicyViolationError(
-                    f"Action '{action_name}' was rejected: {response.decision_notes}"
-                )
-            
-            elif response.status == ApprovalStatus.EXPIRED:
-                raise TimeoutError(
-                    f"Approval request expired for action '{action_name}'"
-                )
-            
-            elif response.status == ApprovalStatus.CANCELLED:
-                raise PolicyViolationError(
-                    f"Approval request was cancelled for action '{action_name}'"
-                )
-            
+                return response
+
             else:
                 logger.warning(f"Unknown approval status: {response.status}")
                 await asyncio.sleep(poll_interval)

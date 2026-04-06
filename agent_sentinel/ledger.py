@@ -125,18 +125,19 @@ class Ledger:
 
     @classmethod
     def record(
-        cls, 
-        action: str, 
-        inputs: Dict[str, Any], 
-        outputs: Any, 
-        cost_usd: float, 
-        duration_ms: float, 
+        cls,
+        action: str,
+        inputs: Dict[str, Any],
+        outputs: Any,
+        cost_usd: float,
+        duration_ms: float,
         outcome: str,
         tags: list[str],
         compliance_metadata: Optional[Dict[str, Any]] = None,
         agent_id: Optional[str] = None,
         task_id: Optional[str] = None,
         mission_id: Optional[str] = None,
+        run_id: Optional[str] = None,
     ):
         """
         Appends a structured log entry to the local JSONL file.
@@ -190,6 +191,8 @@ class Ledger:
             entry["compliance_metadata"] = compliance_metadata
         if agent_id is not None:
             entry["agent_id"] = agent_id
+        if run_id is not None:
+            entry["run_id"] = run_id
         if task_id is not None:
             entry["task_id"] = task_id
         if mission_id is not None:

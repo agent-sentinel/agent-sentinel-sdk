@@ -221,22 +221,35 @@ class BackgroundSync:
         
         if not entries:
             return  # Nothing to sync
-        
-        # Upload in batches
-        uploaded = 0
-        for i in range(0, len(entries), self.config.batch_size):
-            batch = entries[i:i + self.config.batch_size]
 
-            if self._upload_batch(batch):
-                uploaded += len(batch)
-                self._last_sync_offset += len(batch)
-            else:
-                # Stop on first failed batch (will retry next interval)
+        # Group entries by run_id. Entries with an explicit run_id field (set via
+        # ExecutionContext) are sent as their own batch so they land in the correct
+        # platform Run. Entries without one fall back to the sync's configured run_id.
+        run_groups: dict[str, list[dict]] = {}
+        for entry in entries:
+            rid = entry.get("run_id") or self.config.run_id
+            run_groups.setdefault(rid, []).append(entry)
+
+        # Upload each run's entries in batches, preserving order within each run
+        uploaded = 0
+        all_succeeded = True
+        for rid, run_entries in run_groups.items():
+            for i in range(0, len(run_entries), self.config.batch_size):
+                batch = run_entries[i:i + self.config.batch_size]
+                if self._upload_batch(batch, run_id=rid):
+                    uploaded += len(batch)
+                else:
+                    all_succeeded = False
+                    break
+            if not all_succeeded:
                 break
 
         if uploaded > 0:
             logger.info(f"Synced {uploaded} ledger entries to platform")
-            # Remove uploaded lines and purge stale unsynced ones, then reset offset
+
+        if all_succeeded:
+            # All entries uploaded — compact the file and reset offset
+            self._last_sync_offset += len(entries)
             self._compact_file(ledger_path, self._last_sync_offset)
             self._last_sync_offset = 0
     
@@ -339,30 +352,31 @@ class BackgroundSync:
         
         return success_count == len(interventions)
     
-    def _upload_batch(self, entries: list[dict]) -> bool:
+    def _upload_batch(self, entries: list[dict], run_id: Optional[str] = None) -> bool:
         """
         Upload a batch of entries to platform.
-        
+
         Args:
             entries: List of ledger entries (dicts)
-        
+            run_id: Run ID for this batch. Defaults to self.config.run_id.
+
         Returns:
             True if successful, False otherwise
         """
         if not HTTPX_AVAILABLE:
             return False
-        
+
         if not entries:
             return True  # Empty batch is "successful"
-        
+
         url = f"{self.config.platform_url}/api/v1/ingest"
         headers = {
             "Authorization": f"ApiKey {self.config.api_token}",
             "Content-Type": "application/json",
         }
-        
+
         payload = {
-            "run_id": self.config.run_id,
+            "run_id": run_id or self.config.run_id,
             "entries": entries,
         }
         if self.config.agent_id:

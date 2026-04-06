@@ -22,6 +22,7 @@ from typing import Optional
 class _ContextData:
     """Immutable snapshot of execution context values."""
     agent_id: Optional[str] = None
+    run_id: Optional[str] = None
     task_id: Optional[str] = None
     mission_id: Optional[str] = None
 
@@ -57,11 +58,13 @@ class ExecutionContext:
     def __init__(
         self,
         agent_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         task_id: Optional[str] = None,
         mission_id: Optional[str] = None,
     ):
         self._data = _ContextData(
             agent_id=agent_id,
+            run_id=run_id,
             task_id=task_id,
             mission_id=mission_id,
         )
@@ -98,6 +101,12 @@ class ExecutionContext:
         """Return the current agent_id, or None."""
         ctx = _current_context.get()
         return ctx.agent_id if ctx else None
+
+    @staticmethod
+    def get_run_id() -> Optional[str]:
+        """Return the current run_id, or None."""
+        ctx = _current_context.get()
+        return ctx.run_id if ctx else None
 
     @staticmethod
     def get_task_id() -> Optional[str]:

@@ -559,34 +559,61 @@ class PolicyEngine:
     def _fetch_policies_from_platform(cls) -> Optional[List[Dict[str, Any]]]:
         """
         Fetch policies from platform API.
-        
+
         Returns:
-            List of policy dictionaries or None on failure
+            List of policy dictionaries or None on failure.
+            Handles both the legacy list response and the current envelope
+            format {"policies": [...], "conflicts": [...]}.
+            Logs any conflicts returned by the platform as warnings.
         """
         if not cls._remote_config or not HTTPX_AVAILABLE:
             return None
-        
+
         try:
             url = f"{cls._remote_config.platform_url}/api/v1/policies/sync"
-            
+
             params = {}
             if cls._remote_config.agent_id:
                 params["agent_id"] = cls._remote_config.agent_id
             if cls._remote_config.run_id:
                 params["run_id"] = cls._remote_config.run_id
-            
+
             headers = {
                 "Authorization": f"Bearer {cls._remote_config.api_token}"
             }
-            
+
             response = httpx.get(url, params=params, headers=headers, timeout=10.0)
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
+
+            if response.status_code != 200:
                 logger.error(f"Failed to fetch policies: {response.status_code}")
                 return None
-        
+
+            data = response.json()
+
+            # Handle envelope format {"policies": [...], "conflicts": [...]}
+            if isinstance(data, dict):
+                policies = data.get("policies", [])
+                conflicts = data.get("conflicts", [])
+                if conflicts:
+                    logger.warning(
+                        f"Policy conflicts detected ({len(conflicts)}) — "
+                        f"active policies have settings that conflict and were silently merged. "
+                        f"Review and resolve in the console:"
+                    )
+                    for c in conflicts:
+                        logger.warning(
+                            f"  CONFLICT [{c.get('field')}] {c.get('description')} "
+                            f"(resolved to: {c.get('resolved_value')})"
+                        )
+                return policies
+
+            # Legacy: plain list
+            if isinstance(data, list):
+                return data
+
+            logger.error(f"Unexpected policy sync response format: {type(data)}")
+            return None
+
         except Exception as e:
             logger.error(f"Error fetching policies: {e}")
             return None
@@ -765,14 +792,35 @@ class PolicyEngine:
         """Background loop that periodically refreshes policies."""
         if not cls._remote_config:
             return
-        
+
         interval = cls._remote_config.refresh_interval
-        
+
         while not cls._stop_sync.wait(timeout=interval):
             try:
-                cls._sync_policies_once()
+                cls._refresh_from_platform()
             except Exception as e:
                 logger.error(f"Error in policy sync loop: {e}")
+
+    @classmethod
+    def _refresh_from_platform(cls) -> None:
+        """
+        Force-fetch policies from platform and update cache.
+        Used by background sync to always get fresh data, bypassing cache.
+        Also resets _config so deleted policies don't persist.
+        """
+        if not cls._remote_config or not cls._policy_cache:
+            return
+
+        with cls._sync_lock:
+            policies = cls._fetch_policies_from_platform()
+            if policies is not None:
+                cls._policy_cache.save(policies, cls._remote_config.cache_ttl)
+                cls._config = None  # Reset so stale merged state doesn't persist
+                cls._initialized = False
+                cls._apply_remote_policies(policies)
+                logger.debug(f"Background refresh: applied {len(policies)} policies from platform")
+            else:
+                logger.warning("Background refresh: platform unreachable, keeping current config")
     
     @classmethod
     def stop_remote_sync(cls) -> None:

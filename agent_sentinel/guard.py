@@ -326,6 +326,7 @@ async def _execute_async(
     """
     # Resolve attribution from ExecutionContext if not set explicitly
     agent_id = agent_id or ExecutionContext.get_agent_id()
+    run_id = ExecutionContext.get_run_id()
     task_id = task_id or ExecutionContext.get_task_id()
     mission_id = mission_id or ExecutionContext.get_mission_id()
 
@@ -345,7 +346,7 @@ async def _execute_async(
             # Record that we replayed this action
             _safe_log(
                 action_name, args, kwargs, recorded_output, None,
-                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id
+                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id, run_id
             )
             
             return recorded_output
@@ -389,6 +390,15 @@ async def _execute_async(
 
             if approval_response.status != ApprovalStatus.APPROVED:
                 logger.warning(f"Action '{action_name}' not approved: {approval_response.status}")
+                status_str = approval_response.status.value if hasattr(approval_response.status, "value") else str(approval_response.status)
+                _safe_log(
+                    action_name, args, kwargs, None,
+                    f"Approval {status_str}: {approval_response.notes or approval_response.status}",
+                    cost, 0.0, "rejected" if status_str == "rejected" else "blocked", tags,
+                    compliance_metadata.to_dict() if compliance_metadata else None,
+                    agent_id, task_id, mission_id, run_id,
+                )
+                clear_compliance_metadata()
                 raise PolicyViolationError(
                     f"Human approval required but status is: {approval_response.status}"
                 )
@@ -436,6 +446,15 @@ async def _execute_async(
 
         if status_str != "approved":
             logger.warning(f"Action '{action_name}' not approved by platform: {platform_resp.status}")
+            outcome = "rejected" if status_str == "rejected" else "blocked"
+            _safe_log(
+                action_name, args, kwargs, None,
+                f"Approval {status_str}: {platform_resp.decision_notes or platform_resp.status}",
+                cost, 0.0, outcome, tags,
+                compliance_metadata.to_dict() if compliance_metadata else None,
+                agent_id, task_id, mission_id,
+            )
+            clear_compliance_metadata()
             raise PolicyViolationError(
                 f"Platform approval required but status is: {platform_resp.status}"
             )
@@ -457,11 +476,23 @@ async def _execute_async(
     except EvidenceViolationError as e:
         logger.warning(f"Evidence requirement blocked action '{action_name}': {e}")
         _record_evidence_intervention(action_name, cost, e, args, kwargs)
+        _safe_log(
+            action_name, args, kwargs, None, str(e),
+            cost, 0.0, "blocked", tags,
+            compliance_metadata.to_dict() if compliance_metadata else None,
+            agent_id, task_id, mission_id, run_id,
+        )
         clear_compliance_metadata()
         raise
     except (BudgetExceededError, PolicyViolationError) as e:
         logger.warning(f"Policy blocked action '{action_name}': {e}")
         _record_policy_intervention(action_name, cost, e, args, kwargs)
+        _safe_log(
+            action_name, args, kwargs, None, str(e),
+            cost, 0.0, "blocked", tags,
+            compliance_metadata.to_dict() if compliance_metadata else None,
+            agent_id, task_id, mission_id, run_id,
+        )
         clear_compliance_metadata()
         raise
 
@@ -478,6 +509,12 @@ async def _execute_async(
                 stale_evidence=stale,
             )
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            _safe_log(
+                action_name, args, kwargs, None, str(error),
+                cost, 0.0, "blocked", tags,
+                compliance_metadata.to_dict() if compliance_metadata else None,
+                agent_id, task_id, mission_id,
+            )
             clear_compliance_metadata()
             raise error
 
@@ -502,6 +539,12 @@ async def _execute_async(
             )
             error.remediation.reason_code = "UNGROUNDED_ARGUMENT"
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            _safe_log(
+                action_name, args, kwargs, None, str(error),
+                cost, 0.0, "blocked", tags,
+                compliance_metadata.to_dict() if compliance_metadata else None,
+                agent_id, task_id, mission_id,
+            )
             clear_compliance_metadata()
             raise error
 
@@ -518,6 +561,12 @@ async def _execute_async(
             )
             error.remediation.reason_code = "ARGUMENT_CONSTRAINT_VIOLATION"
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            _safe_log(
+                action_name, args, kwargs, None, str(error),
+                cost, 0.0, "blocked", tags,
+                compliance_metadata.to_dict() if compliance_metadata else None,
+                agent_id, task_id, mission_id,
+            )
             clear_compliance_metadata()
             raise error
 
@@ -565,6 +614,7 @@ async def _execute_async(
             agent_id,
             task_id,
             mission_id,
+            run_id,
         )
 
         # Clear compliance metadata after logging
@@ -601,6 +651,7 @@ def _execute_sync(
     """
     # Resolve attribution from ExecutionContext if not set explicitly
     agent_id = agent_id or ExecutionContext.get_agent_id()
+    run_id = ExecutionContext.get_run_id()
     task_id = task_id or ExecutionContext.get_task_id()
     mission_id = mission_id or ExecutionContext.get_mission_id()
 
@@ -620,7 +671,7 @@ def _execute_sync(
             # Record that we replayed this action
             _safe_log(
                 action_name, args, kwargs, recorded_output, None,
-                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id
+                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id, run_id
             )
             
             return recorded_output
@@ -664,6 +715,15 @@ def _execute_sync(
 
             if approval_response.status != ApprovalStatus.APPROVED:
                 logger.warning(f"Action '{action_name}' not approved: {approval_response.status}")
+                status_str = approval_response.status.value if hasattr(approval_response.status, "value") else str(approval_response.status)
+                _safe_log(
+                    action_name, args, kwargs, None,
+                    f"Approval {status_str}: {approval_response.notes or approval_response.status}",
+                    cost, 0.0, "rejected" if status_str == "rejected" else "blocked", tags,
+                    compliance_metadata.to_dict() if compliance_metadata else None,
+                    agent_id, task_id, mission_id, run_id,
+                )
+                clear_compliance_metadata()
                 raise PolicyViolationError(
                     f"Human approval required but status is: {approval_response.status}"
                 )
@@ -713,6 +773,15 @@ def _execute_sync(
 
         if status_str != "approved":
             logger.warning(f"Action '{action_name}' not approved by platform: {platform_resp.status}")
+            outcome = "rejected" if status_str == "rejected" else "blocked"
+            _safe_log(
+                action_name, args, kwargs, None,
+                f"Approval {status_str}: {platform_resp.decision_notes or platform_resp.status}",
+                cost, 0.0, outcome, tags,
+                compliance_metadata.to_dict() if compliance_metadata else None,
+                agent_id, task_id, mission_id,
+            )
+            clear_compliance_metadata()
             raise PolicyViolationError(
                 f"Platform approval required but status is: {platform_resp.status}"
             )
@@ -754,6 +823,12 @@ def _execute_sync(
                 stale_evidence=stale,
             )
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            _safe_log(
+                action_name, args, kwargs, None, str(error),
+                cost, 0.0, "blocked", tags,
+                compliance_metadata.to_dict() if compliance_metadata else None,
+                agent_id, task_id, mission_id,
+            )
             clear_compliance_metadata()
             raise error
 
@@ -778,6 +853,12 @@ def _execute_sync(
             )
             error.remediation.reason_code = "UNGROUNDED_ARGUMENT"
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            _safe_log(
+                action_name, args, kwargs, None, str(error),
+                cost, 0.0, "blocked", tags,
+                compliance_metadata.to_dict() if compliance_metadata else None,
+                agent_id, task_id, mission_id,
+            )
             clear_compliance_metadata()
             raise error
 
@@ -794,6 +875,12 @@ def _execute_sync(
             )
             error.remediation.reason_code = "ARGUMENT_CONSTRAINT_VIOLATION"
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
+            _safe_log(
+                action_name, args, kwargs, None, str(error),
+                cost, 0.0, "blocked", tags,
+                compliance_metadata.to_dict() if compliance_metadata else None,
+                agent_id, task_id, mission_id,
+            )
             clear_compliance_metadata()
             raise error
 
@@ -841,6 +928,7 @@ def _execute_sync(
             agent_id,
             task_id,
             mission_id,
+            run_id,
         )
 
         # Clear compliance metadata after logging
@@ -861,6 +949,7 @@ def _safe_log(
     agent_id: Optional[str] = None,
     task_id: Optional[str] = None,
     mission_id: Optional[str] = None,
+    run_id: Optional[str] = None,
 ):
     """
     Isolate the logging logic to ensure fail-open behavior.
@@ -893,6 +982,7 @@ def _safe_log(
             agent_id=agent_id,
             task_id=task_id,
             mission_id=mission_id,
+            run_id=run_id,
         )
     except Exception as e:
         # FAIL-OPEN: Log to stderr but never crash the agent
