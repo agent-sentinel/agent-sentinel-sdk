@@ -209,9 +209,16 @@ class ReplayMode:
                         tags=data.get("tags", []),
                     )
                     
-                    # If filtering by run_id, check if entry matches
-                    # For now, we load all entries since run_id isn't in the ledger
-                    # TODO: Add run_id to ledger entries in future update
+                    # Filter by run_id if specified
+                    if run_id is not None:
+                        entry_run_id = data.get("run_id")
+                        if entry_run_id != run_id:
+                            continue
+
+                    # Only load entries with real outcomes (not replayed ones)
+                    if entry.outcome == "replayed":
+                        continue
+
                     entries.append(entry)
                     
                 except json.JSONDecodeError as e:

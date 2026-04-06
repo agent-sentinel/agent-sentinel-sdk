@@ -70,7 +70,7 @@ def _record_policy_intervention(
         intervention_type = InterventionType.BUDGET_EXCEEDED
         reason = str(error)
         blast_radius = {
-            "budget_protected": error.limit,
+            "funds_protected": error.limit,
             "cost_prevented": cost,
         }
     else:
@@ -80,7 +80,7 @@ def _record_policy_intervention(
         else:
             intervention_type = InterventionType.HARD_BLOCK
         reason = str(error)
-        blast_radius = {"cost_prevented": cost}
+        blast_radius = {"funds_protected": cost}
 
     # Get current context for attribution
     ctx = ExecutionContext.current()
@@ -95,6 +95,7 @@ def _record_policy_intervention(
         blast_radius=blast_radius,
         original_inputs={"args": args, "kwargs": kwargs},
         agent_id=ctx.agent_id if ctx else None,
+        run_id=ctx.run_id if ctx else None,
         task_id=ctx.task_id if ctx else None,
         mission_id=ctx.mission_id if ctx else None,
         risk_level="high" if cost > 1.0 else "medium",
@@ -133,6 +134,9 @@ def _record_approval_intervention(
         actual_cost = 0.0
         reason = f"Action required approval, status: {approval_response.status}"
 
+    # Calculate blast radius - cost prevented if rejected
+    blast_radius = {"funds_protected": cost if outcome == InterventionOutcome.REJECTED_AFTER_REVIEW else 0.0}
+
     # Record the intervention
     InterventionTracker.record(
         intervention_type=InterventionType.APPROVAL_REQUIRED,
@@ -141,8 +145,10 @@ def _record_approval_intervention(
         estimated_cost=cost,
         actual_cost=actual_cost,
         reason=reason,
+        blast_radius=blast_radius,
         original_inputs={"args": args, "kwargs": kwargs},
         agent_id=ctx.agent_id if ctx else None,
+        run_id=ctx.run_id if ctx else None,
         task_id=ctx.task_id if ctx else None,
         mission_id=ctx.mission_id if ctx else None,
         risk_level="medium",
@@ -172,9 +178,10 @@ def _record_evidence_intervention(
         action_name=action_name,
         estimated_cost=cost,
         reason=str(error),
-        blast_radius={"cost_prevented": cost},
+        blast_radius={"funds_protected": cost},
         original_inputs={"args": args, "kwargs": kwargs},
         agent_id=ctx.agent_id if ctx else None,
+        run_id=ctx.run_id if ctx else None,
         task_id=ctx.task_id if ctx else None,
         mission_id=ctx.mission_id if ctx else None,
         risk_level="medium",
@@ -326,7 +333,6 @@ async def _execute_async(
     """
     # Resolve attribution from ExecutionContext if not set explicitly
     agent_id = agent_id or ExecutionContext.get_agent_id()
-    run_id = ExecutionContext.get_run_id()
     task_id = task_id or ExecutionContext.get_task_id()
     mission_id = mission_id or ExecutionContext.get_mission_id()
 
@@ -346,7 +352,7 @@ async def _execute_async(
             # Record that we replayed this action
             _safe_log(
                 action_name, args, kwargs, recorded_output, None,
-                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id, run_id
+                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id
             )
             
             return recorded_output
@@ -396,7 +402,7 @@ async def _execute_async(
                     f"Approval {status_str}: {approval_response.notes or approval_response.status}",
                     cost, 0.0, "rejected" if status_str == "rejected" else "blocked", tags,
                     compliance_metadata.to_dict() if compliance_metadata else None,
-                    agent_id, task_id, mission_id, run_id,
+                    agent_id, task_id, mission_id,
                 )
                 clear_compliance_metadata()
                 raise PolicyViolationError(
@@ -480,7 +486,7 @@ async def _execute_async(
             action_name, args, kwargs, None, str(e),
             cost, 0.0, "blocked", tags,
             compliance_metadata.to_dict() if compliance_metadata else None,
-            agent_id, task_id, mission_id, run_id,
+            agent_id, task_id, mission_id,
         )
         clear_compliance_metadata()
         raise
@@ -491,7 +497,7 @@ async def _execute_async(
             action_name, args, kwargs, None, str(e),
             cost, 0.0, "blocked", tags,
             compliance_metadata.to_dict() if compliance_metadata else None,
-            agent_id, task_id, mission_id, run_id,
+            agent_id, task_id, mission_id,
         )
         clear_compliance_metadata()
         raise
@@ -614,7 +620,6 @@ async def _execute_async(
             agent_id,
             task_id,
             mission_id,
-            run_id,
         )
 
         # Clear compliance metadata after logging
@@ -651,7 +656,6 @@ def _execute_sync(
     """
     # Resolve attribution from ExecutionContext if not set explicitly
     agent_id = agent_id or ExecutionContext.get_agent_id()
-    run_id = ExecutionContext.get_run_id()
     task_id = task_id or ExecutionContext.get_task_id()
     mission_id = mission_id or ExecutionContext.get_mission_id()
 
@@ -671,7 +675,7 @@ def _execute_sync(
             # Record that we replayed this action
             _safe_log(
                 action_name, args, kwargs, recorded_output, None,
-                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id, run_id
+                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id
             )
             
             return recorded_output
@@ -721,7 +725,7 @@ def _execute_sync(
                     f"Approval {status_str}: {approval_response.notes or approval_response.status}",
                     cost, 0.0, "rejected" if status_str == "rejected" else "blocked", tags,
                     compliance_metadata.to_dict() if compliance_metadata else None,
-                    agent_id, task_id, mission_id, run_id,
+                    agent_id, task_id, mission_id,
                 )
                 clear_compliance_metadata()
                 raise PolicyViolationError(
@@ -807,12 +811,6 @@ def _execute_sync(
     except (BudgetExceededError, PolicyViolationError) as e:
         logger.warning(f"Policy blocked action '{action_name}': {e}")
         _record_policy_intervention(action_name, cost, e, args, kwargs)
-        _safe_log(
-            action_name, args, kwargs, None, str(e),
-            cost, 0.0, "blocked", tags or [],
-            compliance_metadata.to_dict() if compliance_metadata else None,
-            agent_id, task_id, mission_id,
-        )
         clear_compliance_metadata()
         raise
 
@@ -934,7 +932,6 @@ def _execute_sync(
             agent_id,
             task_id,
             mission_id,
-            run_id,
         )
 
         # Clear compliance metadata after logging
@@ -959,22 +956,16 @@ def _safe_log(
 ):
     """
     Isolate the logging logic to ensure fail-open behavior.
-    
+
     This is the critical safety mechanism: if the ledger write fails,
     we log the error but NEVER crash the user's agent.
-    
-    Args:
-        action: Name of the action being recorded
-        args: Positional arguments passed to the function
-        kwargs: Keyword arguments passed to the function
-        result: The return value (if successful)
-        error: Error message (if failed)
-        cost: Cost in USD
-        duration: Duration in milliseconds
-        outcome: "success" or "error"
-        tags: Optional tags for categorization
-        compliance_metadata: Optional EU compliance metadata dict (Enterprise Tier)
     """
+    # Resolve run_id from ExecutionContext if not passed explicitly
+    if run_id is None:
+        ctx = ExecutionContext.current()
+        if ctx:
+            run_id = getattr(ctx, "run_id", None)
+
     try:
         Ledger.record(
             action=action,
