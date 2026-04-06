@@ -414,7 +414,7 @@ async def _execute_async(
             raise PolicyViolationError(str(e))
 
     # Check platform policy-based approval (ApprovalClient)
-    elif PolicyEngine.requires_approval(action_name, cost=cost, tags=tags, risk_level=risk_level):
+    elif (not requires) and PolicyEngine.requires_approval(action_name, cost=cost, tags=tags, risk_level=risk_level):
         compliance_metadata.requires_human_approval = True
         compliance_metadata.approval_status = ApprovalStatus.PENDING
 
@@ -824,7 +824,7 @@ def _execute_sync(
             logger.error(f"Human approval required but no handler configured for '{action_name}'")
             raise PolicyViolationError(str(e))
 
-    elif PolicyEngine.requires_approval(action_name, cost=cost, tags=tags, risk_level=risk_level):
+    elif (not requires) and PolicyEngine.requires_approval(action_name, cost=cost, tags=tags, risk_level=risk_level):
         compliance_metadata.requires_human_approval = True
         compliance_metadata.approval_status = ApprovalStatus.PENDING
 
