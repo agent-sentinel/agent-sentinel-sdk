@@ -36,6 +36,7 @@ def configure(
     - PolicyEngine remote sync (approval rules, deny lists, budgets)
     - Optional local policy overrides (run/action budgets, deny lists)
     - Optional LLM auto-instrumentation (OpenAI / Anthropic)
+    - Execution context for proper attribution
 
     Args:
         api_key: Platform API key (ApiKey <token> format accepted).
@@ -51,8 +52,16 @@ def configure(
     """
     from .sync import enable_remote_sync
     from .policy import PolicyEngine
+    from .context import ExecutionContext
 
-    # 1. Start background ledger sync
+    # 1. Set up execution context with agent/run attribution
+    # This ensures interventions are properly attributed
+    ExecutionContext(
+        agent_id=agent_id,
+        run_id=run_id,
+    ).__enter__()
+
+    # 2. Start background ledger sync
     enable_remote_sync(
         platform_url=platform_url,
         api_token=api_key,
@@ -60,7 +69,7 @@ def configure(
         agent_id=agent_id,
     )
 
-    # 2. Apply local policy overrides if provided
+    # 3. Apply local policy overrides if provided
     if any(v is not None for v in (run_budget, action_budgets, denied_actions)):
         PolicyEngine.configure(
             run_budget=run_budget,
@@ -68,7 +77,7 @@ def configure(
             denied_actions=denied_actions or [],
         )
 
-    # 3. Enable remote policy sync (approval rules, deny lists from platform)
+    # 4. Enable remote policy sync (approval rules, deny lists from platform)
     PolicyEngine.enable_remote_sync(
         platform_url=platform_url,
         api_token=api_key,
@@ -76,7 +85,7 @@ def configure(
         run_id=run_id,
     )
 
-    # 4. Auto-instrument LLM clients if requested
+    # 5. Auto-instrument LLM clients if requested
     if auto_instrument:
         _try_auto_instrument()
 
