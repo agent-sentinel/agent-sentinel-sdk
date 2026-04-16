@@ -40,6 +40,7 @@ class ReplayEntry:
     outcome: str
     timestamp: str
     tags: List[str]
+    run_id: Optional[str] = None
 
 
 class ReplayMode:
@@ -207,11 +208,19 @@ class ReplayMode:
                         outcome=data.get("outcome", ""),
                         timestamp=data.get("timestamp", ""),
                         tags=data.get("tags", []),
+                        run_id=data.get("run_id"),
                     )
                     
-                    # If filtering by run_id, check if entry matches
-                    # For now, we load all entries since run_id isn't in the ledger
-                    # TODO: Add run_id to ledger entries in future update
+                    # Filter by run_id if specified
+                    if run_id is not None:
+                        entry_run_id = data.get("run_id")
+                        if entry_run_id != run_id:
+                            continue
+
+                    # Only load entries with real outcomes (not replayed ones)
+                    if entry.outcome == "replayed":
+                        continue
+
                     entries.append(entry)
                     
                 except json.JSONDecodeError as e:
@@ -361,17 +370,76 @@ class ReplayMode:
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Exit replay mode context."""
+        """Exit replay mode context and report results to platform if configured."""
         progress = self.current_index
         total = len(self.entries)
-        
+
         logger.info(
             f"Exited replay mode: {progress}/{total} entries replayed, "
             f"{len(self.divergences)} divergences detected"
         )
-        
+
+        # Calculate cost savings (sum of cost_usd for replayed entries)
+        cost_savings = sum(e.cost_usd for e in self.entries[:progress])
+
+        # Determine status
+        if exc_type is not None:
+            status = "failed"
+        elif len(self.divergences) == 0:
+            status = "success"
+        else:
+            status = "partial"
+
+        # Report results to platform (best-effort, never raises)
+        self._report_results(status, progress, total, cost_savings)
+
         ReplayMode._active_replay = ReplayMode._replay_stack.pop()
         return False
+
+    def _report_results(
+        self,
+        status: str,
+        actions_replayed: int,
+        actions_total: int,
+        cost_savings: float,
+    ) -> None:
+        """POST replay results to the platform if sync is configured."""
+        try:
+            from .sync import get_sync
+            sync = get_sync()
+            if sync is None or not sync.config.enabled:
+                logger.debug("Remote sync not configured, skipping replay result report")
+                return
+
+            run_id = sync.config.run_id
+            url = f"{sync.config.platform_url}/api/v1/replay/{run_id}/results"
+            headers = {
+                "Authorization": f"ApiKey {sync.config.api_token}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "status": status,
+                "actions_replayed": actions_replayed,
+                "actions_total": actions_total,
+                "divergences_detected": len(self.divergences),
+                "divergences": self.divergences,
+                "cost_savings": cost_savings,
+            }
+
+            try:
+                import httpx
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.post(url, json=payload, headers=headers)
+                    if resp.status_code == 201:
+                        logger.info(f"Replay results reported to platform (run_id={run_id})")
+                    else:
+                        logger.warning(f"Failed to report replay results: {resp.status_code} {resp.text}")
+            except ImportError:
+                logger.debug("httpx not available, cannot report replay results")
+            except Exception as e:
+                logger.warning(f"Failed to report replay results: {e}")
+        except Exception as e:
+            logger.debug(f"Could not report replay results: {e}")
     
     @classmethod
     def is_active(cls) -> bool:

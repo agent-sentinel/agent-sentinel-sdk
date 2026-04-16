@@ -3,14 +3,19 @@ from __future__ import annotations
 from .guard import guarded_action
 from .errors import (
     AgentSentinelError,
+    AgentKilledError,
     BudgetExceededError,
     PolicyViolationError,
+    EvidenceViolationError,
+    RemediationPayload,
     ReplayDivergenceError,
     NetworkError,
     SyncError,
     TimeoutError,
     ConfigurationError,
 )
+from .evidence import EvidenceTracker, EvidenceRecord
+from .constraints import validate_constraints
 from .retry import (
     RetryConfig,
     CircuitBreaker,
@@ -20,7 +25,8 @@ from .retry import (
 from .ledger import Ledger
 from .cost import CostTracker
 from .policy import PolicyEngine, PolicyConfig
-from .sync import BackgroundSync, SyncConfig, enable_remote_sync, flush_and_stop
+from .sync import BackgroundSync, ManualSync, SyncConfig, enable_remote_sync, manual_flush, flush_and_stop
+from ._configure import configure, flush
 from .replay import ReplayMode, ReplayEntry, replay_mode
 from .compliance import (
     # Core classes
@@ -50,6 +56,12 @@ from .approval import (
     RiskLevel,
     ApprovalConfig,
 )
+
+# Execution Context (runtime attribution)
+from .context import ExecutionContext
+
+# Kill Switch (emergency shutdown)
+from .kill_switch import KillSwitchClient
 
 # Interventions (CRITICAL - Core Value Proposition)
 from .intervention import (
@@ -81,16 +93,36 @@ except ImportError:
     set_default_client = None  # type: ignore
     get_default_client = None  # type: ignore
 
+# Built-in guardrails (PII, moderation, loop protection, idempotency)
+from .guardrails import (
+    PIIGuard,
+    PIIRule,
+    detect_pii,
+    ModerationGuard,
+    ModerationRule,
+    KeywordModerator,
+    LoopGuard,
+    LoopRule,
+    IdempotencyCache,
+    IdempotencyHit,
+)
+
 # Framework integrations (optional - requires respective packages)
 # Import integrations module to make it accessible
 from . import integrations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = [
     "guarded_action",
     "AgentSentinelError",
+    "AgentKilledError",
     "BudgetExceededError",
     "PolicyViolationError",
+    "EvidenceViolationError",
+    "RemediationPayload",
+    "EvidenceTracker",
+    "EvidenceRecord",
+    "validate_constraints",
     "ReplayDivergenceError",
     "NetworkError",
     "SyncError",
@@ -105,9 +137,17 @@ __all__ = [
     "PolicyEngine",
     "PolicyConfig",
     "BackgroundSync",
+    "ManualSync",
     "SyncConfig",
     "enable_remote_sync",
+    "manual_flush",
     "flush_and_stop",
+    "configure",
+    "flush",
+    # Execution Context
+    "ExecutionContext",
+    # Kill Switch
+    "KillSwitchClient",
     "ReplayMode",
     "ReplayEntry",
     "replay_mode",
@@ -137,6 +177,17 @@ __all__ = [
     "InterventionRecord",
     "InterventionType",
     "InterventionOutcome",
+    # Built-in guardrails
+    "PIIGuard",
+    "PIIRule",
+    "detect_pii",
+    "ModerationGuard",
+    "ModerationRule",
+    "KeywordModerator",
+    "LoopGuard",
+    "LoopRule",
+    "IdempotencyCache",
+    "IdempotencyHit",
     # MCP Support (optional)
     "MCPClient",
     "MCPTool",

@@ -63,6 +63,9 @@ class BudgetExceededError(AgentSentinelError):
             budget_type: Type of budget (action, run, session)
             details: Additional error context
         """
+        self.spent = spent
+        self.limit = limit
+        self.budget_type = budget_type
         details = details or {}
         details.update({"spent": spent, "limit": limit, "budget_type": budget_type})
         super().__init__(
@@ -102,6 +105,114 @@ class PolicyViolationError(AgentSentinelError):
             error_code="POLICY_VIOLATION",
             details=details,
             recoverable=False,
+        )
+
+
+class RemediationPayload:
+    """
+    Machine-readable remediation information returned when an action is blocked.
+
+    This enables LLM agents to self-repair by understanding exactly what
+    went wrong and what actions to take to fix it.
+    """
+
+    __slots__ = (
+        "reason_code", "missing_requirements", "required_prior_actions",
+        "retry_guidance", "safe_alternatives", "stale_evidence",
+        "argument_violations",
+    )
+
+    def __init__(
+        self,
+        reason_code: str,
+        missing_requirements: Optional[list[str]] = None,
+        required_prior_actions: Optional[list[str]] = None,
+        retry_guidance: Optional[str] = None,
+        safe_alternatives: Optional[list[str]] = None,
+        stale_evidence: Optional[list[str]] = None,
+        argument_violations: Optional[list[str]] = None,
+    ):
+        self.reason_code = reason_code
+        self.missing_requirements = missing_requirements or []
+        self.required_prior_actions = required_prior_actions or []
+        self.retry_guidance = retry_guidance or ""
+        self.safe_alternatives = safe_alternatives or []
+        self.stale_evidence = stale_evidence or []
+        self.argument_violations = argument_violations or []
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "reason_code": self.reason_code,
+            "missing_requirements": self.missing_requirements,
+            "required_prior_actions": self.required_prior_actions,
+            "retry_guidance": self.retry_guidance,
+            "safe_alternatives": self.safe_alternatives,
+            "stale_evidence": self.stale_evidence,
+            "argument_violations": self.argument_violations,
+        }
+
+
+class EvidenceViolationError(PolicyViolationError):
+    """
+    Raised when an action is blocked due to missing or stale evidence.
+
+    Unlike hard policy blocks, evidence violations are recoverable — the agent
+    can fix the issue by executing the required prerequisite actions first.
+
+    The remediation payload provides machine-readable guidance for self-repair.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        action_name: Optional[str] = None,
+        missing_requirements: Optional[list[str]] = None,
+        required_prior_actions: Optional[list[str]] = None,
+        stale_evidence: Optional[list[str]] = None,
+        argument_violations: Optional[list[str]] = None,
+        safe_alternatives: Optional[list[str]] = None,
+        retry_guidance: Optional[str] = None,
+    ):
+        # Determine reason code
+        reason_code = "MISSING_EVIDENCE"
+        if stale_evidence and not missing_requirements:
+            reason_code = "STALE_EVIDENCE"
+        elif argument_violations:
+            reason_code = "ARGUMENT_CONSTRAINT_VIOLATED"
+
+        # Auto-generate retry guidance if not provided
+        if not retry_guidance:
+            parts = []
+            if missing_requirements:
+                parts.append(f"Execute these actions first: {', '.join(missing_requirements)}")
+            if stale_evidence:
+                parts.append(f"Re-execute these actions (evidence expired): {', '.join(stale_evidence)}")
+            if argument_violations:
+                parts.append(f"Fix argument constraints: {', '.join(argument_violations)}")
+            retry_guidance = ". ".join(parts) if parts else "Check action prerequisites."
+
+        self.remediation = RemediationPayload(
+            reason_code=reason_code,
+            missing_requirements=missing_requirements or [],
+            required_prior_actions=required_prior_actions or [],
+            retry_guidance=retry_guidance,
+            safe_alternatives=safe_alternatives or [],
+            stale_evidence=stale_evidence or [],
+            argument_violations=argument_violations or [],
+        )
+
+        details: dict[str, Any] = {"remediation": self.remediation.to_dict()}
+        if action_name:
+            details["action_name"] = action_name
+
+        # Call AgentSentinelError directly to set our own error_code and recoverable
+        AgentSentinelError.__init__(
+            self,
+            message=message,
+            error_code="EVIDENCE_VIOLATION",
+            details=details,
+            recoverable=True,  # Agents CAN fix this by running required actions
         )
 
 
@@ -238,6 +349,29 @@ class TimeoutError(AgentSentinelError):
             error_code="TIMEOUT",
             details=details,
             recoverable=True,  # Timeouts are usually retryable
+        )
+
+
+class AgentKilledError(AgentSentinelError):
+    """Raised when an agent, run, or mission has been killed via kill switch."""
+
+    def __init__(
+        self,
+        message: str,
+        target_type: Optional[str] = None,
+        target_id: Optional[str] = None,
+        details: Optional[dict[str, Any]] = None,
+    ):
+        details = details or {}
+        if target_type:
+            details["target_type"] = target_type
+        if target_id:
+            details["target_id"] = target_id
+        super().__init__(
+            message=message,
+            error_code="AGENT_KILLED",
+            details=details,
+            recoverable=False,
         )
 
 

@@ -27,7 +27,7 @@ from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field
 
 from .cost import CostTracker
-from .errors import BudgetExceededError, PolicyViolationError
+from .errors import BudgetExceededError, PolicyViolationError, EvidenceViolationError
 
 logger = logging.getLogger("agent_sentinel")
 
@@ -79,8 +79,26 @@ class PolicyConfig:
     # Approval Inbox settings
     require_approval: bool = False
     approval_actions: List[str] = field(default_factory=list)
+    approval_tags: List[str] = field(default_factory=list)
+    approval_risk_levels: List[str] = field(default_factory=list)
     approval_threshold_usd: Optional[float] = None
     approval_timeout_seconds: int = 3600
+    # Evidence graph settings (action correctness enforcement)
+    evidence_requirements: Dict[str, List[str]] = field(default_factory=dict)
+    evidence_max_age_seconds: Dict[str, int] = field(default_factory=dict)
+    commit_actions: List[str] = field(default_factory=list)
+    evidence_actions: List[str] = field(default_factory=list)
+    argument_constraints: Dict[str, dict] = field(default_factory=dict)
+    grounding_rules: Dict[str, Dict[str, Dict[str, str]]] = field(default_factory=dict)
+    # Built-in guardrails (A1-A4): opt-in, per-action.
+    # Map action name -> rule instance. See agent_sentinel.guardrails for rule shapes.
+    pii_rules: Dict[str, Any] = field(default_factory=dict)
+    moderation_rules: Dict[str, Any] = field(default_factory=dict)
+    loop_rules: Dict[str, Any] = field(default_factory=dict)
+    # Global toggle: scan every action with the default rule when no per-action rule exists.
+    pii_default_enabled: bool = False
+    moderation_default_enabled: bool = False
+    loop_default_enabled: bool = False
 
 
 @dataclass
@@ -229,6 +247,30 @@ class PolicyCache:
             logger.error(f"Failed to load policy cache: {e}")
             return None
     
+    def load_stale(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Load policies from cache even if expired (stale fallback).
+
+        Used when the platform is unreachable and we need any policy data.
+
+        Returns:
+            List of policy dictionaries or None if no cache exists
+        """
+        try:
+            if not self.cache_file.exists():
+                return None
+
+            with open(self.cache_file, "r") as f:
+                cache_data = json.load(f)
+
+            policies = cache_data["policies"]
+            logger.warning(f"Using stale policy cache ({len(policies)} policies) - platform unreachable")
+            return policies
+
+        except Exception as e:
+            logger.error(f"Failed to load stale policy cache: {e}")
+            return None
+
     def clear(self) -> None:
         """Clear the policy cache."""
         try:
@@ -290,11 +332,17 @@ class PolicyEngine:
         denied_actions: Optional[List[str]] = None,
         allowed_actions: Optional[List[str]] = None,
         rate_limits: Optional[Dict[str, Dict[str, int]]] = None,
-        strict_mode: bool = True
+        strict_mode: bool = True,
+        evidence_requirements: Optional[Dict[str, List[str]]] = None,
+        evidence_max_age_seconds: Optional[Dict[str, int]] = None,
+        commit_actions: Optional[List[str]] = None,
+        evidence_actions: Optional[List[str]] = None,
+        argument_constraints: Optional[Dict[str, dict]] = None,
+        grounding_rules: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None,
     ) -> None:
         """
         Configure policy engine programmatically.
-        
+
         Args:
             session_budget: Max USD for entire session
             run_budget: Max USD for current run
@@ -303,6 +351,11 @@ class PolicyEngine:
             allowed_actions: If set, allowlist mode (only these permitted)
             rate_limits: Dict of action -> {"max_count": N, "window_seconds": M}
             strict_mode: If True, violations stop execution
+            evidence_requirements: Dict of action -> list of required prior actions
+            evidence_max_age_seconds: Dict of action -> max evidence age in seconds
+            commit_actions: List of state-changing commit actions
+            evidence_actions: List of evidence-producing actions
+            argument_constraints: Dict of action -> JSON Schema for argument validation
         """
         cls._config = PolicyConfig(
             session_budget=session_budget,
@@ -311,7 +364,13 @@ class PolicyEngine:
             denied_actions=denied_actions or [],
             allowed_actions=allowed_actions,
             rate_limits=rate_limits or {},
-            strict_mode=strict_mode
+            strict_mode=strict_mode,
+            evidence_requirements=evidence_requirements or {},
+            evidence_max_age_seconds=evidence_max_age_seconds or {},
+            commit_actions=commit_actions or [],
+            evidence_actions=evidence_actions or [],
+            argument_constraints=argument_constraints or {},
+            grounding_rules=grounding_rules or {},
         )
         cls._initialized = True
         logger.info("Policy engine configured programmatically")
@@ -396,7 +455,16 @@ class PolicyEngine:
             allowed_actions = data.get("allowed_actions")
             rate_limits = data.get("rate_limits", {})
             strict_mode = data.get("strict_mode", True)
-            
+
+            # Parse evidence graph settings
+            evidence = data.get("evidence", {})
+            evidence_requirements = evidence.get("requirements", {})
+            evidence_max_age_seconds = evidence.get("max_age_seconds", {})
+            commit_actions = evidence.get("commit_actions", [])
+            evidence_actions = evidence.get("evidence_actions", [])
+            argument_constraints = evidence.get("argument_constraints", {})
+            grounding_rules = evidence.get("grounding_rules", {})
+
             cls.configure(
                 session_budget=session_budget,
                 run_budget=run_budget,
@@ -404,7 +472,13 @@ class PolicyEngine:
                 denied_actions=denied_actions,
                 allowed_actions=allowed_actions,
                 rate_limits=rate_limits,
-                strict_mode=strict_mode
+                strict_mode=strict_mode,
+                evidence_requirements=evidence_requirements,
+                evidence_max_age_seconds=evidence_max_age_seconds,
+                commit_actions=commit_actions,
+                evidence_actions=evidence_actions,
+                argument_constraints=argument_constraints,
+                grounding_rules=grounding_rules,
             )
             
             logger.info(f"Policy engine loaded from {config_path}")
@@ -463,19 +537,19 @@ class PolicyEngine:
     @classmethod
     def _sync_policies_once(cls) -> None:
         """
-        Sync policies once: try cache first, then remote.
+        Sync policies once: try cache first, then remote, then stale cache.
         """
         if not cls._remote_config or not cls._policy_cache:
             return
-        
+
         with cls._sync_lock:
-            # Try loading from cache first
+            # Try loading from fresh cache first
             cached_policies = cls._policy_cache.load()
             if cached_policies:
                 cls._apply_remote_policies(cached_policies)
                 logger.debug("Applied policies from cache")
                 return
-            
+
             # Cache miss or expired - fetch from platform
             policies = cls._fetch_policies_from_platform()
             if policies:
@@ -483,40 +557,72 @@ class PolicyEngine:
                 cls._apply_remote_policies(policies)
                 logger.info(f"Downloaded and applied {len(policies)} policies from platform")
             else:
-                logger.warning("Failed to fetch policies from platform")
+                # Platform unreachable — fall back to stale cache if available
+                stale = cls._policy_cache.load_stale()
+                if stale:
+                    cls._apply_remote_policies(stale)
+                else:
+                    logger.warning("Failed to fetch policies from platform and no cache available")
     
     @classmethod
     def _fetch_policies_from_platform(cls) -> Optional[List[Dict[str, Any]]]:
         """
         Fetch policies from platform API.
-        
+
         Returns:
-            List of policy dictionaries or None on failure
+            List of policy dictionaries or None on failure.
+            Handles both the legacy list response and the current envelope
+            format {"policies": [...], "conflicts": [...]}.
+            Logs any conflicts returned by the platform as warnings.
         """
         if not cls._remote_config or not HTTPX_AVAILABLE:
             return None
-        
+
         try:
             url = f"{cls._remote_config.platform_url}/api/v1/policies/sync"
-            
+
             params = {}
             if cls._remote_config.agent_id:
                 params["agent_id"] = cls._remote_config.agent_id
             if cls._remote_config.run_id:
                 params["run_id"] = cls._remote_config.run_id
-            
+
             headers = {
                 "Authorization": f"Bearer {cls._remote_config.api_token}"
             }
-            
+
             response = httpx.get(url, params=params, headers=headers, timeout=10.0)
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
+
+            if response.status_code != 200:
                 logger.error(f"Failed to fetch policies: {response.status_code}")
                 return None
-        
+
+            data = response.json()
+
+            # Handle envelope format {"policies": [...], "conflicts": [...]}
+            if isinstance(data, dict):
+                policies = data.get("policies", [])
+                conflicts = data.get("conflicts", [])
+                if conflicts:
+                    logger.warning(
+                        f"Policy conflicts detected ({len(conflicts)}) — "
+                        f"active policies have settings that conflict and were silently merged. "
+                        f"Review and resolve in the console:"
+                    )
+                    for c in conflicts:
+                        logger.warning(
+                            f"  CONFLICT [{c.get('field')}] {c.get('description')} "
+                            f"(resolved to: {c.get('resolved_value')})"
+                        )
+                return policies
+
+            # Legacy: plain list
+            if isinstance(data, list):
+                return data
+
+            logger.error(f"Unexpected policy sync response format: {type(data)}")
+            return None
+
         except Exception as e:
             logger.error(f"Error fetching policies: {e}")
             return None
@@ -608,7 +714,19 @@ class PolicyEngine:
                 cls._config.approval_actions = list(set(
                     cls._config.approval_actions + policy["approval_actions"]
                 ))
-            
+
+            # Merge approval tags (union)
+            if policy.get("approval_tags"):
+                cls._config.approval_tags = list(set(
+                    cls._config.approval_tags + policy["approval_tags"]
+                ))
+
+            # Merge approval risk levels (union)
+            if policy.get("approval_risk_levels"):
+                cls._config.approval_risk_levels = list(set(
+                    cls._config.approval_risk_levels + policy["approval_risk_levels"]
+                ))
+
             # Approval threshold (most restrictive - lowest threshold)
             if policy.get("approval_threshold_usd") is not None:
                 if cls._config.approval_threshold_usd is None:
@@ -622,6 +740,46 @@ class PolicyEngine:
             # Approval timeout (use the policy's timeout)
             if policy.get("approval_timeout_seconds"):
                 cls._config.approval_timeout_seconds = policy["approval_timeout_seconds"]
+
+            # Merge evidence requirements (union of all requirements per action)
+            if policy.get("evidence_requirements"):
+                for action, required in policy["evidence_requirements"].items():
+                    if action not in cls._config.evidence_requirements:
+                        cls._config.evidence_requirements[action] = list(required)
+                    else:
+                        cls._config.evidence_requirements[action] = list(set(
+                            cls._config.evidence_requirements[action] + required
+                        ))
+
+            # Merge evidence max age (most restrictive = minimum)
+            if policy.get("evidence_max_age_seconds"):
+                for action, max_age in policy["evidence_max_age_seconds"].items():
+                    if action not in cls._config.evidence_max_age_seconds:
+                        cls._config.evidence_max_age_seconds[action] = max_age
+                    else:
+                        cls._config.evidence_max_age_seconds[action] = min(
+                            cls._config.evidence_max_age_seconds[action], max_age
+                        )
+
+            # Merge commit/evidence action lists (union)
+            if policy.get("commit_actions"):
+                cls._config.commit_actions = list(set(
+                    cls._config.commit_actions + policy["commit_actions"]
+                ))
+            if policy.get("evidence_actions"):
+                cls._config.evidence_actions = list(set(
+                    cls._config.evidence_actions + policy["evidence_actions"]
+                ))
+
+            # Merge argument constraints (per-action, last policy wins)
+            if policy.get("argument_constraints"):
+                for action, constraints in policy["argument_constraints"].items():
+                    cls._config.argument_constraints[action] = constraints
+
+            # Merge grounding rules (per-action, last policy wins)
+            if policy.get("grounding_rules"):
+                for action, rules in policy["grounding_rules"].items():
+                    cls._config.grounding_rules[action] = rules
     
     @classmethod
     def _start_background_sync(cls) -> None:
@@ -643,14 +801,35 @@ class PolicyEngine:
         """Background loop that periodically refreshes policies."""
         if not cls._remote_config:
             return
-        
+
         interval = cls._remote_config.refresh_interval
-        
+
         while not cls._stop_sync.wait(timeout=interval):
             try:
-                cls._sync_policies_once()
+                cls._refresh_from_platform()
             except Exception as e:
                 logger.error(f"Error in policy sync loop: {e}")
+
+    @classmethod
+    def _refresh_from_platform(cls) -> None:
+        """
+        Force-fetch policies from platform and update cache.
+        Used by background sync to always get fresh data, bypassing cache.
+        Also resets _config so deleted policies don't persist.
+        """
+        if not cls._remote_config or not cls._policy_cache:
+            return
+
+        with cls._sync_lock:
+            policies = cls._fetch_policies_from_platform()
+            if policies is not None:
+                cls._policy_cache.save(policies, cls._remote_config.cache_ttl)
+                cls._config = None  # Reset so stale merged state doesn't persist
+                cls._initialized = False
+                cls._apply_remote_policies(policies)
+                logger.debug(f"Background refresh: applied {len(policies)} policies from platform")
+            else:
+                logger.warning("Background refresh: platform unreachable, keeping current config")
     
     @classmethod
     def stop_remote_sync(cls) -> None:
@@ -666,46 +845,48 @@ class PolicyEngine:
         return cls._initialized and cls._config is not None
     
     @classmethod
-    def check_action(cls, action: str, cost: float) -> None:
+    def check_action(cls, action: str, cost: float, kwargs: Optional[Dict[str, Any]] = None) -> None:
         """
         Check if an action is permitted under current policy.
-        
+
         This is called BEFORE the action executes. If any policy is
         violated, raises an exception to prevent execution.
-        
+
         Args:
             action: Name of the action to check
             cost: Proposed cost of the action in USD
-        
+            kwargs: Optional action arguments (for evidence and argument constraint checks)
+
         Raises:
             PolicyViolationError: If action is denied or rate limit exceeded
             BudgetExceededError: If budget would be exceeded
+            EvidenceViolationError: If required evidence is missing or stale
         """
         # If not configured, allow everything (fail-open)
         if not cls.is_configured():
             return
-        
+
         config = cls._config
-        
+
         # 1. Check denied/allowed lists
         if action in config.denied_actions:
             raise PolicyViolationError(
                 f"Action '{action}' is on the denied list"
             )
-        
+
         if config.allowed_actions and action not in config.allowed_actions:
             raise PolicyViolationError(
                 f"Action '{action}' is not on the allowed list. "
                 f"Permitted: {config.allowed_actions}"
             )
-        
+
         # 2. Check rate limits
         if action in config.rate_limits:
             limits = config.rate_limits[action]
             max_count = limits.get("max_count", 999999)
             window_seconds = limits.get("window_seconds", 60)
             cls._rate_limiter.check_rate_limit(action, max_count, window_seconds)
-        
+
         # 3. Check session budget
         if config.session_budget is not None:
             current_session = CostTracker.get_session_total()
@@ -717,7 +898,7 @@ class PolicyEngine:
                     limit=config.session_budget,
                     budget_type="session"
                 )
-        
+
         # 4. Check run budget
         if config.run_budget is not None:
             current_run = CostTracker.get_run_total()
@@ -729,13 +910,13 @@ class PolicyEngine:
                     limit=config.run_budget,
                     budget_type="run"
                 )
-        
+
         # 5. Check action-specific budget
         if action in config.action_budgets:
             action_limit = config.action_budgets[action]
             action_stats = CostTracker.get_action_stats(action)
             action_total = action_stats["total_cost"]
-            
+
             if action_total + cost > action_limit:
                 raise BudgetExceededError(
                     f"Action '{action}' budget exceeded: {action_total:.4f} + {cost:.4f} "
@@ -744,7 +925,155 @@ class PolicyEngine:
                     limit=action_limit,
                     budget_type="action"
                 )
-    
+
+        # 6. Check evidence requirements
+        if action in config.evidence_requirements:
+            from .evidence import EvidenceTracker
+            required = config.evidence_requirements[action]
+            max_age = config.evidence_max_age_seconds.get(action)
+            all_met, missing, stale = EvidenceTracker.check_requirements(required, max_age)
+            if not all_met:
+                raise EvidenceViolationError(
+                    message=f"Action '{action}' requires evidence from: {missing + stale}",
+                    action_name=action,
+                    missing_requirements=missing,
+                    required_prior_actions=required,
+                    stale_evidence=stale,
+                )
+
+        # 7. Check argument constraints
+        if action in config.argument_constraints and kwargs:
+            from .constraints import validate_constraints
+            violations = validate_constraints(kwargs, config.argument_constraints[action])
+            if violations:
+                raise EvidenceViolationError(
+                    message=f"Action '{action}' argument constraints violated: {violations}",
+                    action_name=action,
+                    argument_violations=violations,
+                )
+
+        # 7b. PII guardrail (built-in)
+        pii_rule = config.pii_rules.get(action)
+        if pii_rule is None and config.pii_default_enabled:
+            from .guardrails.pii import PIIRule as _PIIRule
+            pii_rule = _PIIRule()
+        if pii_rule is not None and kwargs:
+            from .guardrails.pii import PIIGuard
+            matches = PIIGuard.scan_kwargs(kwargs, pii_rule)
+            if matches:
+                cats = sorted({m.category for m in matches})
+                fields = sorted({m.field_path for m in matches})
+                retry_hint = (
+                    f"Remove PII (categories={cats}) from fields={fields} "
+                    "before retrying. Replace with tokenized references, "
+                    "anonymized IDs, or placeholder values."
+                )
+                err = PolicyViolationError(
+                    f"Action '{action}' blocked by PII guardrail: "
+                    f"categories={cats} fields={fields}",
+                    policy_rule="pii_guard",
+                    action_name=action,
+                    details={
+                        "reason_code": "PII_DETECTED",
+                        "categories": cats,
+                        "fields": fields,
+                        "matches": [m.to_dict() for m in matches],
+                        "retry_guidance": retry_hint,
+                        "safe_alternatives": [
+                            "use an anonymized or tokenized identifier",
+                            "route through an approved redaction helper",
+                            "escalate for human review via approval inbox",
+                        ],
+                        "recoverable": True,
+                    },
+                )
+                raise err
+
+        # 7c. Content moderation guardrail (built-in)
+        mod_rule = config.moderation_rules.get(action)
+        if mod_rule is None and config.moderation_default_enabled:
+            from .guardrails.moderation import ModerationRule as _ModerationRule
+            mod_rule = _ModerationRule()
+        if mod_rule is not None and kwargs:
+            from .guardrails.moderation import ModerationGuard
+            results = ModerationGuard.scan_kwargs(kwargs, mod_rule)
+            blocking = ModerationGuard.should_block(results, mod_rule)
+            if blocking:
+                cats = sorted({c for r in blocking for c in r.categories})
+                fields = sorted({r.field_path for r in blocking})
+                retry_hint = (
+                    f"Rephrase or remove disallowed content (categories={cats}) "
+                    f"from fields={fields}. Do not paraphrase to bypass moderation."
+                )
+                raise PolicyViolationError(
+                    f"Action '{action}' blocked by content moderation: "
+                    f"categories={cats} fields={fields}",
+                    policy_rule="moderation_guard",
+                    action_name=action,
+                    details={
+                        "reason_code": "CONTENT_MODERATED",
+                        "categories": cats,
+                        "fields": fields,
+                        "results": [r.to_dict() for r in blocking],
+                        "retry_guidance": retry_hint,
+                        "safe_alternatives": [
+                            "respond with a refusal and escalate to a human",
+                            "clarify intent to the user and request a different request",
+                        ],
+                        "recoverable": True,
+                    },
+                )
+
+        # 7d. Loop protection guardrail (built-in)
+        loop_rule = config.loop_rules.get(action)
+        if loop_rule is None and config.loop_default_enabled:
+            from .guardrails.loop_detector import LoopRule as _LoopRule
+            loop_rule = _LoopRule()
+        if loop_rule is not None:
+            from .guardrails.loop_detector import DEFAULT_LOOP_GUARD
+            det = DEFAULT_LOOP_GUARD.record_and_check(action, kwargs, loop_rule)
+            if det is not None:
+                raise PolicyViolationError(
+                    f"Action '{action}' blocked by loop protection: "
+                    f"{det.count} repeats in {det.window_seconds}s",
+                    policy_rule="loop_guard",
+                    action_name=action,
+                    details={
+                        "reason_code": "LOOP_DETECTED",
+                        "detection": det.to_dict(),
+                        "retry_guidance": det.break_out_hint,
+                        "prior_attempts": det.count,
+                        "safe_alternatives": [
+                            "vary the arguments before retrying",
+                            "escalate to a human via the approval inbox",
+                            "stop retrying and return the current best-effort result",
+                        ],
+                        "recoverable": True,
+                    },
+                )
+
+        # 8. Check groundedness
+        if action in config.grounding_rules and kwargs:
+            from .evidence import EvidenceTracker
+            grounded, ungrounded_details = EvidenceTracker.check_groundedness(
+                action_kwargs=kwargs,
+                grounding_rules=config.grounding_rules[action],
+                max_age_seconds=config.evidence_max_age_seconds.get(action),
+            )
+            if not grounded:
+                field_names = [d["field"] for d in ungrounded_details]
+                error = EvidenceViolationError(
+                    message=f"Action '{action}' arguments not grounded in evidence: {field_names}",
+                    action_name=action,
+                    argument_violations=[
+                        f"'{d['field']}' value '{d['actual_value']}' not found in {d['expected_source']}"
+                        for d in ungrounded_details
+                    ],
+                    retry_guidance=f"Ensure these arguments match prior evidence: {field_names}",
+                )
+                error.remediation.reason_code = "UNGROUNDED_ARGUMENT"
+                raise error
+
     @classmethod
     def get_config(cls) -> Optional[PolicyConfig]:
         """
@@ -756,40 +1085,61 @@ class PolicyEngine:
         return cls._config
     
     @classmethod
-    def requires_approval(cls, action: str, cost: float) -> bool:
+    def requires_approval(
+        cls,
+        action: str,
+        cost: float,
+        tags: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+    ) -> bool:
         """
         Check if an action requires human approval.
-        
+
         Args:
             action: Name of the action
             cost: Cost of the action in USD
-        
+            tags: Tags associated with the action
+            risk_level: Risk level of the action (e.g. "LOW", "MEDIUM", "HIGH", "CRITICAL")
+
         Returns:
             True if human approval is required
         """
         if not cls.is_configured():
             return False
-        
+
         config = cls._config
-        
+
         # Check if approval is enabled
         if not config.require_approval:
             return False
-        
+
         # Check if this specific action requires approval
         if config.approval_actions and action in config.approval_actions:
             return True
-        
+
+        # Check if any of the action's tags match approval_tags
+        if config.approval_tags and tags:
+            if any(t in config.approval_tags for t in tags):
+                return True
+
+        # Check if the action's risk level matches approval_risk_levels
+        if config.approval_risk_levels and risk_level:
+            if risk_level.upper() in [r.upper() for r in config.approval_risk_levels]:
+                return True
+
         # Check if cost exceeds threshold
         if config.approval_threshold_usd is not None:
             if cost >= config.approval_threshold_usd:
                 return True
-        
-        # If no specific actions listed and no threshold, 
+
+        # If no specific criteria configured,
         # require_approval=True means all actions need approval
-        if not config.approval_actions and config.approval_threshold_usd is None:
+        if (not config.approval_actions
+            and not config.approval_tags
+            and not config.approval_risk_levels
+            and config.approval_threshold_usd is None):
             return True
-        
+
         return False
     
     @classmethod

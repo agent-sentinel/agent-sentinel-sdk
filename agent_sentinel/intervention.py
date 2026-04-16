@@ -27,6 +27,11 @@ class InterventionType(str, Enum):
     BUDGET_EXCEEDED = "budget_exceeded"    # Blocked due to budget constraints
     DOWNGRADE = "downgrade"                # Action parameters modified/reduced
     WARNING = "warning"                    # Allowed but flagged as risky
+    MISSING_EVIDENCE = "missing_evidence"  # Blocked due to missing prerequisite evidence
+    PII_BLOCKED = "pii_blocked"            # Blocked by PII guardrail
+    CONTENT_BLOCKED = "content_blocked"    # Blocked by content moderation guardrail
+    LOOP_DETECTED = "loop_detected"        # Blocked by tight-loop detector
+    IDEMPOTENT_REPLAY = "idempotent_replay"  # Returned cached result for repeated idempotency key
 
 
 class InterventionOutcome(str, Enum):
@@ -58,6 +63,8 @@ class InterventionRecord:
     # Context
     agent_id: Optional[str] = None
     run_id: Optional[str] = None
+    task_id: Optional[str] = None
+    mission_id: Optional[str] = None
     policy_name: Optional[str] = None
     
     # Cost/Risk
@@ -78,10 +85,13 @@ class InterventionRecord:
     
     # Additional context
     context: Dict[str, Any] = field(default_factory=dict)
-    
+
+    # Structured remediation payload (for evidence violations)
+    remediation_payload: Optional[Dict[str, Any]] = None
+
     # Timestamp
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -91,6 +101,8 @@ class InterventionRecord:
             "action_description": self.action_description,
             "agent_id": self.agent_id,
             "run_id": self.run_id,
+            "task_id": self.task_id,
+            "mission_id": self.mission_id,
             "policy_name": self.policy_name,
             "estimated_cost": self.estimated_cost,
             "actual_cost": self.actual_cost,
@@ -101,6 +113,7 @@ class InterventionRecord:
             "original_inputs": self.original_inputs,
             "modified_inputs": self.modified_inputs,
             "context": self.context,
+            "remediation_payload": self.remediation_payload,
             "timestamp": self.timestamp,
         }
 
@@ -144,6 +157,8 @@ class InterventionTracker:
         action_description: Optional[str] = None,
         agent_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        mission_id: Optional[str] = None,
         policy_name: Optional[str] = None,
         estimated_cost: float = 0.0,
         actual_cost: float = 0.0,
@@ -154,15 +169,16 @@ class InterventionTracker:
         original_inputs: Optional[Dict[str, Any]] = None,
         modified_inputs: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
+        remediation_payload: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Record an intervention.
-        
+
         This is called whenever Sentinel blocks, pauses, or modifies an action.
         """
         if not cls._initialized:
             cls.initialize()
-        
+
         intervention = InterventionRecord(
             intervention_type=intervention_type,
             outcome=outcome,
@@ -170,6 +186,8 @@ class InterventionTracker:
             action_description=action_description,
             agent_id=agent_id,
             run_id=run_id,
+            task_id=task_id,
+            mission_id=mission_id,
             policy_name=policy_name,
             estimated_cost=estimated_cost,
             actual_cost=actual_cost,
@@ -180,6 +198,7 @@ class InterventionTracker:
             original_inputs=original_inputs,
             modified_inputs=modified_inputs,
             context=context or {},
+            remediation_payload=remediation_payload,
         )
         
         # Write to local file
@@ -228,6 +247,8 @@ class InterventionTracker:
                             action_description=data.get("action_description"),
                             agent_id=data.get("agent_id"),
                             run_id=data.get("run_id"),
+                            task_id=data.get("task_id"),
+                            mission_id=data.get("mission_id"),
                             policy_name=data.get("policy_name"),
                             estimated_cost=data.get("estimated_cost", 0.0),
                             actual_cost=data.get("actual_cost", 0.0),
@@ -238,6 +259,7 @@ class InterventionTracker:
                             original_inputs=data.get("original_inputs"),
                             modified_inputs=data.get("modified_inputs"),
                             context=data.get("context", {}),
+                            remediation_payload=data.get("remediation_payload"),
                             timestamp=data.get("timestamp"),
                         ))
             

@@ -225,88 +225,70 @@ class TestComplianceModule:
     
     def test_compliance_imports(self) -> None:
         """Test that compliance module can be imported."""
-        try:
-            from agent_sentinel.compliance import (
-                ComplianceChecker,
-                RiskScorer,
-                ComplianceReport
-            )
-            assert ComplianceChecker is not None
-            assert RiskScorer is not None
-            assert ComplianceReport is not None
-        except ImportError:
-            pytest.skip("Compliance module not available")
+        from agent_sentinel.compliance import (
+            ComplianceMetadata,
+            HumanApprovalHandler,
+            ComplianceLevel,
+        )
+        assert ComplianceMetadata is not None
+        assert HumanApprovalHandler is not None
+        assert ComplianceLevel is not None
+
+    def test_compliance_metadata_initialization(self) -> None:
+        """Test ComplianceMetadata initialization."""
+        from agent_sentinel.compliance import ComplianceMetadata
+
+        metadata = ComplianceMetadata()
+        assert metadata is not None
+        assert metadata.requires_human_approval is False
+
+    def test_compliance_level_enum(self) -> None:
+        """Test ComplianceLevel enum values."""
+        from agent_sentinel.compliance import ComplianceLevel
+
+        assert ComplianceLevel.MINIMAL == "minimal"
+        assert ComplianceLevel.LIMITED == "limited"
+        assert ComplianceLevel.HIGH_RISK == "high_risk"
     
-    def test_compliance_checker_initialization(self) -> None:
-        """Test ComplianceChecker initialization."""
-        try:
-            from agent_sentinel.compliance import ComplianceChecker
-            
-            checker = ComplianceChecker()
-            assert checker is not None
-        except ImportError:
-            pytest.skip("Compliance module not available")
-    
-    def test_risk_scorer_initialization(self) -> None:
-        """Test RiskScorer initialization."""
-        try:
-            from agent_sentinel.compliance import RiskScorer
-            
-            scorer = RiskScorer()
-            assert scorer is not None
-        except ImportError:
-            pytest.skip("Compliance module not available")
-    
-    def test_compliance_report_creation(self) -> None:
-        """Test creating a ComplianceReport."""
-        try:
-            from agent_sentinel.compliance import ComplianceReport
-            
-            report = ComplianceReport(
-                run_id="run-123",
-                total_actions=10,
-                compliant_actions=10,
-                risk_score=0.1
-            )
-            assert report is not None
-            assert report.run_id == "run-123"
-        except ImportError:
-            pytest.skip("Compliance module not available")
-    
-    def test_compliance_checker_check_action(self) -> None:
-        """Test ComplianceChecker checking an action."""
-        try:
-            from agent_sentinel.compliance import ComplianceChecker
-            
-            checker = ComplianceChecker()
-            
-            # Check compliance of an action
-            is_compliant = checker.check_action(
-                action_name="test_action",
-                inputs={"key": "value"},
-                cost=0.01
-            )
-            assert isinstance(is_compliant, bool)
-        except ImportError:
-            pytest.skip("Compliance module not available")
-    
-    def test_risk_scorer_score_action(self) -> None:
-        """Test RiskScorer scoring an action."""
-        try:
-            from agent_sentinel.compliance import RiskScorer
-            
-            scorer = RiskScorer()
-            
-            # Score an action
-            risk_score = scorer.score_action(
-                action_name="test_action",
-                cost=0.50,
-                is_network_call=True
-            )
-            assert isinstance(risk_score, (int, float))
-            assert 0 <= risk_score <= 1
-        except ImportError:
-            pytest.skip("Compliance module not available")
+    def test_compliance_metadata_to_dict(self) -> None:
+        """Test ComplianceMetadata serialization."""
+        from agent_sentinel.compliance import ComplianceMetadata, ApprovalStatus
+
+        metadata = ComplianceMetadata()
+        metadata.requires_human_approval = True
+        metadata.approval_status = ApprovalStatus.APPROVED
+
+        result = metadata.to_dict()
+        assert result["requires_human_approval"] is True
+        assert result["approval_status"] == "approved"
+
+    def test_compliance_metadata_context_functions(self) -> None:
+        """Test compliance metadata context get/set/clear."""
+        from agent_sentinel.compliance import (
+            set_compliance_metadata,
+            get_compliance_metadata,
+            clear_compliance_metadata,
+            ComplianceMetadata,
+        )
+
+        metadata = ComplianceMetadata()
+        metadata.requires_human_approval = True
+        set_compliance_metadata(metadata)
+
+        retrieved = get_compliance_metadata()
+        assert retrieved is not None
+        assert retrieved.requires_human_approval is True
+
+        clear_compliance_metadata()
+        assert get_compliance_metadata() is None
+
+    def test_approval_status_enum(self) -> None:
+        """Test ApprovalStatus enum values."""
+        from agent_sentinel.compliance import ApprovalStatus
+
+        assert ApprovalStatus.PENDING == "pending"
+        assert ApprovalStatus.APPROVED == "approved"
+        assert ApprovalStatus.REJECTED == "rejected"
 
 
 class TestInterventionModule:
@@ -314,15 +296,12 @@ class TestInterventionModule:
     
     def test_intervention_imports(self) -> None:
         """Test that intervention module can be imported."""
-        try:
-            from agent_sentinel.intervention import (
-                Intervention,
-                InterventionType,
-            )
-            assert Intervention is not None
-            assert InterventionType is not None
-        except ImportError:
-            pytest.skip("Intervention module not available")
+        from agent_sentinel.intervention import (
+            InterventionRecord,
+            InterventionType,
+        )
+        assert InterventionRecord is not None
+        assert InterventionType is not None
     
     def test_intervention_types(self) -> None:
         """Test InterventionType enum."""
@@ -337,18 +316,18 @@ class TestInterventionModule:
             pytest.skip("Intervention module not available or incomplete")
     
     def test_intervention_initialization(self) -> None:
-        """Test Intervention initialization."""
-        try:
-            from agent_sentinel.intervention import Intervention
-            
-            intervention = Intervention(
-                action_name="test_action",
-                intervention_type="pause",
-                reason="Budget exceeded"
-            )
-            assert intervention is not None
-        except (ImportError, TypeError):
-            pytest.skip("Intervention not fully implemented")
+        """Test InterventionRecord initialization."""
+        from agent_sentinel.intervention import InterventionRecord, InterventionType, InterventionOutcome
+
+        intervention = InterventionRecord(
+            intervention_type=InterventionType.BUDGET_EXCEEDED,
+            outcome=InterventionOutcome.BLOCKED,
+            action_name="test_action",
+            reason="Budget exceeded"
+        )
+        assert intervention is not None
+        assert intervention.action_name == "test_action"
+        assert intervention.reason == "Budget exceeded"
 
 
 class TestRetryExceptionHandling:

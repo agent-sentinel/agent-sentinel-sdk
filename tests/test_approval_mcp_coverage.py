@@ -179,26 +179,23 @@ class TestApprovalClient:
     """Test ApprovalClient class."""
     
     def test_approval_client_initialization(self) -> None:
-        """Test ApprovalClient initialization."""
-        try:
-            client = ApprovalClient(
-                platform_url="https://api.example.com",
-                api_token="test-token"
-            )
-            assert client is not None
-        except (TypeError, AttributeError):
-            pytest.skip("ApprovalClient interface not fully defined")
-    
+        """Test ApprovalClient initialization via configure()."""
+        ApprovalClient.configure(
+            platform_url="https://api.example.com",
+            api_token="test-token"
+        )
+        assert ApprovalClient.is_configured()
+        ApprovalClient.reset()
+
     def test_approval_client_local_only(self) -> None:
-        """Test ApprovalClient in local-only mode."""
-        try:
-            client = ApprovalClient(
-                platform_url=None,
-                api_token=None
-            )
-            assert client is not None
-        except (TypeError, AttributeError):
-            pytest.skip("ApprovalClient interface not fully defined")
+        """Test ApprovalClient is not configured when disabled."""
+        ApprovalClient.configure(
+            platform_url="https://api.example.com",
+            api_token="test-token",
+            enabled=False
+        )
+        assert not ApprovalClient.is_configured()
+        ApprovalClient.reset()
 
 
 class TestMCPModels:
@@ -266,18 +263,16 @@ class TestMCPModels:
         """Test MCPToolCallResult model creation."""
         try:
             from agent_sentinel.mcp import MCPToolCallResult
-            
+
             result = MCPToolCallResult(
-                tool_name="get_policies",
                 success=True,
                 data={"policies": []}
             )
-            
-            assert result.tool_name == "get_policies"
+
             assert result.success is True
             assert result.data == {"policies": []}
-        except (ImportError, TypeError):
-            pytest.skip("MCPToolCallResult not fully implemented")
+        except ImportError:
+            pytest.skip("MCP module not available")
 
 
 class TestMCPClient:
@@ -300,14 +295,13 @@ class TestMCPClient:
         """Test MCPClient initialization with optional parameters."""
         try:
             from agent_sentinel.mcp import MCPClient
-            
+
             client = MCPClient(
                 platform_url="https://api.example.com",
                 api_token="test-token",
-                request_timeout=30,
-                verify_ssl=True
+                timeout=60.0
             )
             assert client is not None
-        except (ImportError, TypeError):
-            pytest.skip("MCPClient doesn't support these parameters or not available")
+        except ImportError:
+            pytest.skip("MCP module not available")
 

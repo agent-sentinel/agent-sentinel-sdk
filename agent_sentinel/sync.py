@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
 import random
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timezone
 
 try:
     import httpx
@@ -27,8 +28,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
 
 from .ledger import Ledger
-from .errors import NetworkError, SyncError, ConfigurationError
-from .retry import RetryConfig, with_retry
+from .errors import NetworkError, SyncError
 from .intervention import InterventionTracker
 
 logger = logging.getLogger("agent_sentinel")
@@ -42,30 +42,37 @@ class SyncConfig:
         platform_url: str,
         api_token: str,
         run_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         flush_interval: float = 10.0,
         batch_size: int = 100,
         max_retries: int = 3,
         enabled: bool = True,
+        local_retention_hours: int = 24,
     ):
         """
         Configure sync to platform.
-        
+
         Args:
             platform_url: Base URL of platform (e.g. "https://api.agentsentinel.dev")
             api_token: JWT token or API key for authentication
             run_id: UUID for this agent run (auto-generated if None)
+            agent_id: Stable agent identifier for discovery (optional)
             flush_interval: Seconds between flushes (default 10)
             batch_size: Max entries per batch (default 100)
             max_retries: Max retry attempts per batch (default 3)
             enabled: Enable/disable sync (default True)
+            local_retention_hours: Hours to keep unsynced entries locally before
+                purging. Synced entries are removed immediately. Default 24h.
         """
         self.platform_url = platform_url.rstrip("/")
         self.api_token = api_token
         self.run_id = run_id or str(uuid.uuid4())
+        self.agent_id = agent_id
         self.flush_interval = flush_interval
         self.batch_size = batch_size
         self.max_retries = max_retries
         self.enabled = enabled
+        self.local_retention_hours = local_retention_hours
 
 
 class BackgroundSync:
@@ -214,21 +221,37 @@ class BackgroundSync:
         
         if not entries:
             return  # Nothing to sync
-        
-        # Upload in batches
+
+        # Group entries by run_id. Entries with an explicit run_id field (set via
+        # ExecutionContext) are sent as their own batch so they land in the correct
+        # platform Run. Entries without one fall back to the sync's configured run_id.
+        run_groups: dict[str, list[dict]] = {}
+        for entry in entries:
+            rid = entry.get("run_id") or self.config.run_id
+            run_groups.setdefault(rid, []).append(entry)
+
+        # Upload each run's entries in batches, preserving order within each run
         uploaded = 0
-        for i in range(0, len(entries), self.config.batch_size):
-            batch = entries[i:i + self.config.batch_size]
-            
-            if self._upload_batch(batch):
-                uploaded += len(batch)
-                self._last_sync_offset += len(batch)
-            else:
-                # Stop on first failed batch (will retry next interval)
+        all_succeeded = True
+        for rid, run_entries in run_groups.items():
+            for i in range(0, len(run_entries), self.config.batch_size):
+                batch = run_entries[i:i + self.config.batch_size]
+                if self._upload_batch(batch, run_id=rid):
+                    uploaded += len(batch)
+                else:
+                    all_succeeded = False
+                    break
+            if not all_succeeded:
                 break
-        
+
         if uploaded > 0:
             logger.info(f"Synced {uploaded} ledger entries to platform")
+
+        if all_succeeded:
+            # All entries uploaded — compact the file and reset offset
+            self._last_sync_offset += len(entries)
+            self._compact_file(ledger_path, self._last_sync_offset)
+            self._last_sync_offset = 0
     
     def _sync_interventions(self) -> None:
         """
@@ -268,16 +291,19 @@ class BackgroundSync:
         uploaded = 0
         for i in range(0, len(interventions), self.config.batch_size):
             batch = interventions[i:i + self.config.batch_size]
-            
+
             if self._upload_intervention_batch(batch):
                 uploaded += len(batch)
                 self._last_intervention_sync_offset += len(batch)
             else:
                 # Stop on first failed batch (will retry next interval)
                 break
-        
+
         if uploaded > 0:
             logger.info(f"Synced {uploaded} interventions to platform")
+            # Remove uploaded lines and purge stale unsynced ones, then reset offset
+            self._compact_file(intervention_file, self._last_intervention_sync_offset)
+            self._last_intervention_sync_offset = 0
     
     def _upload_intervention_batch(self, interventions: list[dict]) -> bool:
         """
@@ -326,32 +352,35 @@ class BackgroundSync:
         
         return success_count == len(interventions)
     
-    def _upload_batch(self, entries: list[dict]) -> bool:
+    def _upload_batch(self, entries: list[dict], run_id: Optional[str] = None) -> bool:
         """
         Upload a batch of entries to platform.
-        
+
         Args:
             entries: List of ledger entries (dicts)
-        
+            run_id: Run ID for this batch. Defaults to self.config.run_id.
+
         Returns:
             True if successful, False otherwise
         """
         if not HTTPX_AVAILABLE:
             return False
-        
+
         if not entries:
             return True  # Empty batch is "successful"
-        
+
         url = f"{self.config.platform_url}/api/v1/ingest"
         headers = {
             "Authorization": f"ApiKey {self.config.api_token}",
             "Content-Type": "application/json",
         }
-        
+
         payload = {
-            "run_id": self.config.run_id,
+            "run_id": run_id or self.config.run_id,
             "entries": entries,
         }
+        if self.config.agent_id:
+            payload["agent_id"] = self.config.agent_id
         
         # Retry with exponential backoff
         last_error = None
@@ -486,6 +515,59 @@ class BackgroundSync:
         with httpx.Client(timeout=10.0, follow_redirects=True) as client:
             return client.post(url, json=payload, headers=headers)
     
+    def _compact_file(self, file_path: Path, synced_up_to_line: int) -> None:
+        """
+        Rewrite a JSONL file removing synced entries and entries older than
+        local_retention_hours.
+
+        Lines below synced_up_to_line have been confirmed uploaded and are
+        always removed. Lines at or above that index are kept only if their
+        timestamp is within the retention window — this purges entries that
+        could never be synced (e.g. persistent platform outage).
+
+        Uses an atomic rename so a crash mid-write never leaves a truncated
+        file. After compaction _last_sync_offset should be reset to 0 by the
+        caller.
+
+        Note: there is an accepted, tiny race window where lines appended by
+        Ledger.record() between our file-read and the rename may be lost.
+        This is the standard logrotate trade-off for a telemetry buffer.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=self.config.local_retention_hours)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            kept = []
+            for i, line in enumerate(lines):
+                if i < synced_up_to_line:
+                    continue  # Already uploaded — drop unconditionally
+                if not line.strip():
+                    continue  # Drop blank lines
+                # Retain if timestamp is recent or unparseable (safe default)
+                try:
+                    ts_str = json.loads(line).get("timestamp", "")
+                    ts = datetime.fromisoformat(ts_str)
+                    if ts < cutoff:
+                        logger.debug(f"Purging stale local entry from {ts_str}")
+                        continue
+                except Exception:
+                    pass  # Unparseable — keep it
+                kept.append(line)
+
+            # Atomic rewrite via temp file then rename
+            tmp_path = file_path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.writelines(kept)
+            os.replace(tmp_path, file_path)  # Atomic on POSIX and Windows
+
+            removed = len(lines) - len(kept)
+            if removed:
+                logger.debug(f"Compacted {file_path.name}: removed {removed} entries, {len(kept)} remaining")
+
+        except Exception as e:
+            logger.error(f"Failed to compact {file_path.name}: {e}")
+
     def _calculate_backoff(self, attempt: int) -> float:
         """
         Calculate exponential backoff with jitter.
@@ -502,6 +584,53 @@ class BackgroundSync:
         return min(base_wait + jitter, 10.0)
 
 
+class ManualSync:
+    """
+    Sync without background threads. Caller controls when data is flushed.
+
+    Use cases: serverless functions, workflow activities, CLI tools,
+    any context where daemon threads are inappropriate or unavailable.
+
+    Usage::
+
+        sync = ManualSync(SyncConfig(
+            platform_url="https://api.agentsentinel.dev",
+            api_token="your-api-key",
+        ))
+
+        # ... run guarded actions ...
+
+        sync.flush()  # blocking, uploads everything accumulated so far
+    """
+
+    def __init__(self, config: SyncConfig):
+        if not HTTPX_AVAILABLE:
+            logger.warning(
+                "httpx not installed. ManualSync disabled. "
+                "Install with: pip install agent-sentinel[remote]"
+            )
+            config.enabled = False
+
+        self.config = config
+        # Delegate to a BackgroundSync instance but never start its thread
+        self._inner = BackgroundSync(config)
+
+    def flush(self) -> None:
+        """
+        Upload all new ledger entries and interventions to platform.
+
+        Blocks until complete. Safe to call from any execution context
+        (no background threads are created).
+        """
+        if not self.config.enabled:
+            return
+
+        try:
+            self._inner._flush_once()
+        except Exception as e:
+            logger.error(f"ManualSync flush failed: {e}")
+
+
 # Global sync instance (optional - users can manage their own)
 _global_sync: Optional[BackgroundSync] = None
 
@@ -510,43 +639,33 @@ def enable_remote_sync(
     platform_url: str,
     api_token: str,
     run_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
     flush_interval: float = 10.0,
     auto_start: bool = True,
 ) -> BackgroundSync:
     """
     Enable remote sync to platform (convenience function).
-    
+
     This configures and starts a global background sync instance.
-    
+
     Args:
         platform_url: Base URL of platform
         api_token: JWT token or API key
         run_id: Optional run ID (auto-generated if None)
+        agent_id: Stable agent identifier for discovery
         flush_interval: Seconds between flushes
         auto_start: Start sync immediately
-    
+
     Returns:
         BackgroundSync instance
-    
-    Example:
-        from agent_sentinel import enable_remote_sync
-        
-        sync = enable_remote_sync(
-            platform_url="https://api.agentsentinel.dev",
-            api_token="your-jwt-token",
-        )
-        
-        # Use your agent - logs are synced automatically
-        
-        # At exit:
-        sync.stop()
     """
     global _global_sync
-    
+
     config = SyncConfig(
         platform_url=platform_url,
         api_token=api_token,
         run_id=run_id,
+        agent_id=agent_id,
         flush_interval=flush_interval,
     )
     
@@ -571,11 +690,36 @@ def get_sync() -> Optional[BackgroundSync]:
 def flush_and_stop() -> None:
     """
     Flush remaining logs and stop global sync.
-    
+
     Call this before your agent exits to ensure all logs are uploaded.
     """
     global _global_sync
     if _global_sync:
         _global_sync.stop()
         _global_sync = None
+
+
+def manual_flush(
+    platform_url: str,
+    api_token: str,
+    run_id: Optional[str] = None,
+) -> None:
+    """
+    One-shot flush of all pending ledger entries and interventions.
+
+    Creates a ManualSync, flushes, and discards. No threads are started.
+    Useful at the end of a short-lived process or activity.
+
+    Args:
+        platform_url: Base URL of platform
+        api_token: JWT token or API key
+        run_id: Optional run ID (auto-generated if None)
+    """
+    config = SyncConfig(
+        platform_url=platform_url,
+        api_token=api_token,
+        run_id=run_id,
+    )
+    sync = ManualSync(config)
+    sync.flush()
 

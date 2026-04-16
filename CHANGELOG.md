@@ -5,6 +5,45 @@ All notable changes to AgentSentinel SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-04-16
+
+### Added
+
+#### Built-in Runtime Guardrails
+
+- **PII Detection** (`PIIGuard`, `PIIRule`, `detect_pii`): stdlib-only regex detector for email, US SSN, Luhn-validated credit card, US phone, AWS access key, private-key blocks, and generic API-key-like tokens. Recursively walks action kwargs. Wired into `PolicyEngine.check_action` via `pii_rules` / `pii_default_enabled`.
+- **Content Moderation** (`ModerationGuard`, `ModerationRule`, `KeywordModerator`): pluggable `Moderator` protocol with an offline keyword-based default. Strict / balanced / permissive strictness. `moderation_rules` / `moderation_default_enabled`.
+- **Loop Protection** (`LoopGuard`, `LoopRule`): sliding-window detector on `(action_name, arg_hash)` with configurable threshold, window, and `arg_exclude` for nonces. `loop_rules` / `loop_default_enabled`.
+- **Idempotency** (`IdempotencyCache`, `IdempotencyHit`): in-process keyed cache with TTL and `run_id` scoping. `@guarded_action(idempotency_key=..., idempotency_ttl_seconds=...)` wired in both async and sync execution paths; cache hit short-circuits before policy/approval checks.
+
+#### Self-Repair Feedback Enrichment
+
+- Every guardrail block now carries `retry_guidance`, `safe_alternatives`, `recoverable`, and `prior_attempts` (loop) in `PolicyViolationError.details` — enabling LLM agents to self-correct without operator intervention.
+
+#### New Intervention Types
+
+- `InterventionType.PII_BLOCKED`, `CONTENT_BLOCKED`, `LOOP_DETECTED`, `IDEMPOTENT_REPLAY` — blocks are categorized in the ledger by their guardrail type, not just `HARD_BLOCK`.
+
+#### PolicyConfig Extensions
+
+- `pii_rules`, `moderation_rules`, `loop_rules`: per-action rule maps.
+- `pii_default_enabled`, `moderation_default_enabled`, `loop_default_enabled`: global toggle switches.
+
+#### Examples
+
+- `examples/langgraph_sentinel.py`: runnable 3-node LangGraph workflow demonstrating evidence-graph enforcement, groundedness checks, and structured remediation payloads flowing back as tool messages.
+
+### Changed
+
+- `PolicyEngine.check_action` now runs PII → moderation → loop checks between argument-constraint and groundedness steps (backward-compatible; new checks only fire when rules are configured).
+- `_record_policy_intervention` in `guard.py` routes blocks by `reason_code` so the ledger categorizes PII/moderation/loop interventions correctly.
+
+### Fixed
+
+- `docs/README.md`: "zero-dependency" claim corrected to "minimal-dependency (Pydantic + PyYAML)".
+
+---
+
 ## [0.1.0] - 2025-01-15
 
 ### Initial Release
