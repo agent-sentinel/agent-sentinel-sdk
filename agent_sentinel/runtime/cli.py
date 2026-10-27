@@ -6,6 +6,8 @@ Subcommands, each taking ``--config PATH`` (else
 
 - ``run``: serve the ``agentsentinel-mcp`` stdio proxy with the config.
   Outbound-only: HTTPS to the platform, stdio to the harness, no listener.
+  With ``approvals.wait``, a call that needs approval is held, polled and
+  retried once approved (see ``approvals.py``).
 - ``config``: print the resolved config as YAML (the key is never shown).
 - ``doctor``: run the safety checks (see ``doctor.py``).
 
@@ -46,12 +48,23 @@ async def serve(
 ) -> None:
     """Run the stdio proxy with ``runtime_config`` over the given MCP streams."""
     from .. import mcp_proxy
+    from .approvals import ApprovalWaiter
 
+    proxy_config = runtime_config.proxy_config()
+    waiter = None
+    if runtime_config.approvals.wait:
+        waiter = ApprovalWaiter(
+            proxy_config,
+            runtime_config.url,
+            runtime_config.approvals,
+            http_transport=http_transport,
+        )
     await mcp_proxy.serve(
-        runtime_config.proxy_config(),
+        proxy_config,
         read_stream,
         write_stream,
         http_transport=http_transport,
+        approval_waiter=waiter,
     )
 
 
@@ -83,6 +96,12 @@ def _parser() -> argparse.ArgumentParser:
     ):
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("--config", metavar="PATH", help="runtime.yaml path")
+        if name == "doctor":
+            sub.add_argument(
+                "--offline",
+                action="store_true",
+                help="skip the upstream-reachable check (no network)",
+            )
     return parser
 
 
@@ -111,7 +130,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     path = runtime_config.resolve_config_path(args.config, os.environ)
     if args.command == "doctor":
-        return doctor.main(path)
+        return doctor.main(path, offline=args.offline)
 
     try:
         cfg = runtime_config.load_runtime_config(path)

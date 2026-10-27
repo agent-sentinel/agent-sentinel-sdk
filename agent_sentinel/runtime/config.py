@@ -5,7 +5,9 @@ Load and validate the runtime's single config file (``runtime.yaml``).
 
     url: https://platform.example.com    # optional; defaults to the hosted platform
     workspace: /home/agent/work          # required; absolute; existing directory
-    api_key_file: /etc/agentsentinel/key # required; absolute; outside workspace
+    api_key_file: /etc/agentsentinel/key # required; absolute; outside workspace;
+                                         # owned by the runtime's user, mode 600
+                                         # (chown it: a root-owned key is refused)
     harness: cursor                      # optional
     approvals:                           # optional
       wait: true
@@ -339,6 +341,13 @@ def check_config_location(doc: ConfigDocument, workspace: str) -> None:
         raise ConfigError("config file changed while it was being read; run again")
 
 
+KEY_OWNER_GUIDANCE = (
+    "the runtime's own user must own it with mode 600: keep it under that "
+    "user's home (for example ~/.config/agentsentinel/key), or chown "
+    "/etc/agentsentinel/key to that user and chmod 600 it; a root-owned key "
+    "file fails this check"
+)
+
 _SWAPPED = "api_key_file changed while it was being read; run again"
 
 
@@ -397,7 +406,9 @@ def read_key_file(workspace: str, api_key_file: str) -> bytes:
         if not stat.S_ISREG(st.st_mode):
             raise ConfigError("api_key_file must be a regular file")
         if st.st_uid != os.getuid():
-            raise ConfigError("api_key_file must be owned by the current user")
+            raise ConfigError(
+                f"api_key_file must be owned by the current user; {KEY_OWNER_GUIDANCE}"
+            )
         if st.st_mode & 0o077:
             raise ConfigError(
                 "api_key_file must not be readable or writable by group or "

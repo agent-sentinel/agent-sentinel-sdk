@@ -5,6 +5,41 @@ All notable changes to AgentSentinel SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-27
+
+No breaking changes for existing SDK or `agentsentinel-mcp` users.
+
+### Added
+
+- **`agentsentinel-runtime` approvals (t28b).** With `approvals.wait: true` in
+  the runtime config, a `tools/call` that the platform answers with
+  `require_approval` is held while the runtime polls the approval outbound with
+  the same agent-bound key, then retried once if approved. Rejected, expired,
+  cancelled and info-requested outcomes return a clear tool error; a wait that
+  times out does not cancel the approval. Approver text is scrubbed of the key
+  (and any 8+ character part of it) and of email addresses.
+- **`agentsentinel-runtime doctor` proves the key is out of the model's reach
+  (t28c).** New checks: key file outside the workspace (by path and by
+  directory identity), key file and config file ownership and permissions,
+  a bounded scan of the workspace for the key's bytes (files of any size,
+  symlinks to outside files, an entry/byte/time budget), known harness config
+  files, the environment, and upstream reachability (`--offline` skips it).
+  doctor never passes what it cannot prove: it fails when the runtime runs as
+  root or as the user that owns or can write the workspace, and when a scan
+  limit is hit. `run_checks()` withholds any message holding part of the key.
+
+### Security
+
+- The runtime's config file must be owned by the current user, not writable by
+  group or others, have no other hard links and sit outside the workspace; it
+  is checked on the opened file and re-checked after reading.
+
+### Changed
+
+- Dependency floors raised for security advisories (PyJWT, starlette,
+  python-multipart, langchain-core and others via the lockfile); `crewai`
+  extra resolves to 1.15.x.
+
 ## [0.5.0] - 2026-10-27
 
 No breaking changes: every existing call, including positional ones, keeps

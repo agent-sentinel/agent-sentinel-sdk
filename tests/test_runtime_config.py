@@ -566,15 +566,43 @@ DOCTOR_IDS = [
 ]
 
 
-def test_doctor_valid_config_passes(setup, capsys):
-    assert cli.main(["doctor", "--config", setup.write()]) == 0
+def test_doctor_valid_config_passes(setup, capsys, monkeypatch):
+    # tmp_path is owned by the test's user; a valid setup runs the harness as
+    # a different user, so the workspace must not be owned by the runtime's.
+    monkeypatch.setattr(doctor, "_runtime_uid", lambda: os.getuid() + 1000)
+    monkeypatch.setattr(doctor, "_runtime_can_write", lambda ws: False)
+    assert cli.main(["doctor", "--offline", "--config", setup.write()]) == 0
 
     out, err = capsys.readouterr()
     assert err == ""
     _assert_no_key(out)
     lines = out.splitlines()
-    assert all(line.startswith("PASS ") for line in lines)
-    assert [line.split(" ")[1] for line in lines] == DOCTOR_IDS
+    assert all(
+        line.startswith("PASS ") or line.startswith("SKIP upstream-reachable ")
+        for line in lines
+    )
+    ids = [line.split(" ")[1] for line in lines]
+    assert ids[: len(DOCTOR_IDS)] == DOCTOR_IDS
+    assert "runtime-user-separate" in ids
+
+
+def test_doctor_same_user_workspace_fails(setup, capsys, monkeypatch):
+    # The real owner of tmp_path is the runtime's user: a model running as
+    # that user can read the key file wherever it is, so doctor must fail.
+    monkeypatch.setattr(doctor, "_workspace_owner", lambda ws: os.getuid())
+    assert cli.main(["doctor", "--offline", "--config", setup.write()]) == 1
+
+    out, err = capsys.readouterr()
+    _assert_no_key(out + err)
+    assert "FAIL runtime-user-separate " in out
+
+
+def test_doctor_offline_flag_is_only_on_doctor(setup, capsys):
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["config", "--offline", "--config", setup.write()])
+    assert exited.value.code == 2
+    _out, err = capsys.readouterr()
+    _assert_no_key(err)
 
 
 def test_doctor_world_readable_key_file_fails(setup, capsys):

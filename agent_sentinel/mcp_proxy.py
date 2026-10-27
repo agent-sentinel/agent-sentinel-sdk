@@ -27,7 +27,7 @@ import logging
 import os
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -67,6 +67,16 @@ _LOCAL_FAILURE_CODES = frozenset(
 _KEY_CHARS = re.compile(r"^[\x21-\x7e]+$")  # printable ASCII, no spaces
 _HEADER_CHARS = re.compile(r"^[\x20-\x7e]+$")  # printable ASCII
 _REASON_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
+
+# Sends one tools/call upstream with the proxy's error mapping applied.
+CallForward = Callable[[types.CallToolRequestParams], Awaitable[types.CallToolResult]]
+# Optional post-processing of a tools/call result (agentsentinel-runtime's
+# approval wait). Receives the original params, the upstream result and the
+# forwarder; returns the result for the client.
+ApprovalWaiter = Callable[
+    [types.CallToolRequestParams, types.CallToolResult, CallForward],
+    Awaitable[types.CallToolResult],
+]
 
 
 class ConfigError(Exception):
@@ -326,8 +336,14 @@ class _Upstream:
                 self._session = None
 
 
-def build_server(upstream: _Upstream) -> Server[Any, Any]:
-    """The stdio-facing server: tools/list and tools/call go upstream verbatim."""
+def build_server(
+    upstream: _Upstream, approval_waiter: Optional[ApprovalWaiter] = None
+) -> Server[Any, Any]:
+    """The stdio-facing server: tools/list and tools/call go upstream verbatim.
+
+    ``approval_waiter``, when set, sees every tools/call result before the
+    client does; with None the result is returned unchanged.
+    """
     server: Server[Any, Any] = Server(
         "agentsentinel-mcp",
         version=__version__,
@@ -348,23 +364,26 @@ def build_server(upstream: _Upstream) -> Server[Any, Any]:
             raise McpError(_upstream_error(exc)) from None
         return types.ServerResult(result)
 
-    async def call_tool(req: types.CallToolRequest) -> types.ServerResult:
+    async def forward(params: types.CallToolRequestParams) -> types.CallToolResult:
         try:
             session = await upstream.session()
-            result = await session.send_request(
-                types.ClientRequest(types.CallToolRequest(params=req.params)),
+            return await session.send_request(
+                types.ClientRequest(types.CallToolRequest(params=params)),
                 types.CallToolResult,
             )
         except Exception as exc:  # noqa: BLE001 - every failure becomes a tool result
             error = _upstream_error(exc)
             if _find_mcp_error(exc) is not None and error.code not in _LOCAL_FAILURE_CODES:
                 raise McpError(error) from None
-            return types.ServerResult(
-                types.CallToolResult(
-                    content=[types.TextContent(type="text", text=error.message)],
-                    isError=True,
-                )
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=error.message)],
+                isError=True,
             )
+
+    async def call_tool(req: types.CallToolRequest) -> types.ServerResult:
+        result = await forward(req.params)
+        if approval_waiter is not None:
+            result = await approval_waiter(req.params, result, forward)
         return types.ServerResult(result)
 
     server.request_handlers[types.ListToolsRequest] = list_tools
@@ -378,15 +397,17 @@ async def serve(
     write_stream: Any,
     *,
     http_transport: Optional[httpx.AsyncBaseTransport] = None,
+    approval_waiter: Optional[ApprovalWaiter] = None,
 ) -> None:
     """Run the proxy over the given MCP streams until the client disconnects.
 
     ``http_transport`` replaces the network transport (tests pass an
     ``httpx.MockTransport``); headers and error mapping still apply.
+    ``approval_waiter`` is passed to ``build_server``.
     """
     async with anyio.create_task_group() as task_group:
         upstream = _Upstream(config, task_group, http_transport)
-        server = build_server(upstream)
+        server = build_server(upstream, approval_waiter)
         try:
             await server.run(
                 read_stream, write_stream, server.create_initialization_options()
