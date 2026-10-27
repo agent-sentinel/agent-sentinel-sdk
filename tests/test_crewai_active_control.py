@@ -91,9 +91,14 @@ class MockCrew:
 def reset_state():
     """Reset PolicyEngine and CostTracker before each test."""
     PolicyEngine.reset()
+    # reset() now defaults to "fail_closed_writes"; this suite was written
+    # against the pre-0.4 fail-open-when-unconfigured assumption (see
+    # conftest.py's docstring for why this is assigned directly).
+    PolicyEngine._enforcement_mode = "fail_open"
     CostTracker.reset_all()
     yield
     PolicyEngine.reset()
+    PolicyEngine._enforcement_mode = "fail_open"
     CostTracker.reset_all()
 
 

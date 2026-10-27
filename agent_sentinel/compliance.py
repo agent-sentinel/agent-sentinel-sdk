@@ -115,19 +115,129 @@ class ComplianceMetadata:
 class HumanApprovalHandler:
     """
     Handler for human-in-the-loop approval workflow.
-    
-    This is a foundational stub. Full implementation would include:
-    - Integration with platform approval UI
-    - Webhook/callback support
-    - Timeout handling
-    - Multi-approver workflows
-    
-    For now, it provides the interface and can be extended.
+
+    Can be used as an instance with a local callback, or as a class with
+    class-level handlers.  When ``ApprovalClient`` is configured, instance
+    methods ``request_approval_sync`` / ``request_approval_async`` delegate
+    to the platform instead of invoking the local callback.
+
+    Instance usage::
+
+        handler = HumanApprovalHandler(callback=lambda req: True)
+        approved = handler.request_approval_sync(
+            action_name="drop_table",
+            estimated_cost=0.05,
+            context={"table": "users"},
+        )
+
+    Class usage (legacy)::
+
+        HumanApprovalHandler.set_approval_handler(my_sync_handler)
+        response = HumanApprovalHandler.request_approval_sync(...)
     """
-    
+
     _approval_callback: Optional[Callable[[ApprovalRequest], Awaitable[ApprovalResponse]]] = None
     _sync_approval_callback: Optional[Callable[[ApprovalRequest], ApprovalResponse]] = None
-    
+
+    # ------------------------------------------------------------------
+    # Instance API
+    # ------------------------------------------------------------------
+
+    def __init__(
+        self,
+        callback: Optional[Callable[..., Any]] = None,
+    ) -> None:
+        """
+        Create an instance-level handler.
+
+        Args:
+            callback: A callable that receives an ``ApprovalRequest`` (or any
+                positional arg) and returns a truthy/falsy value indicating
+                approval.  Only used when ``ApprovalClient`` is *not*
+                configured.
+        """
+        self._instance_callback = callback
+
+    def request_approval_sync(
+        self,
+        action_name: str,
+        estimated_cost: float = 0.0,
+        context: Optional[dict] = None,
+        timeout: Optional[int] = None,
+    ) -> bool:
+        """
+        Request human approval for an action (blocking).
+
+        When ``ApprovalClient`` is configured this delegates to the platform.
+        Otherwise the local ``callback`` supplied at construction time is
+        invoked with an ``ApprovalRequest`` instance.
+
+        Returns:
+            ``True`` if approved, ``False`` otherwise.
+        """
+        from agent_sentinel.approval import ApprovalClient, ApprovalStatus as _AS
+        if ApprovalClient.is_configured():
+            response = ApprovalClient.request_approval_sync(
+                action_name=action_name,
+                estimated_cost=estimated_cost,
+                context=context,
+                timeout_seconds=timeout,
+            )
+            return response.status == _AS.APPROVED
+
+        # Fall back to local callback
+        request = ApprovalRequest(
+            action_name=action_name,
+            action_description="",
+            inputs=context or {},
+            estimated_cost=estimated_cost,
+        )
+        if self._instance_callback is not None:
+            result = self._instance_callback(request)
+            return bool(result)
+        logger.error("No approval callback configured and ApprovalClient is not set up.")
+        return False
+
+    async def request_approval_async(
+        self,
+        action_name: str,
+        estimated_cost: float = 0.0,
+        context: Optional[dict] = None,
+        timeout: Optional[int] = None,
+    ) -> bool:
+        """
+        Request human approval for an action (async).
+
+        When ``ApprovalClient`` is configured this delegates to the platform.
+        Otherwise the local ``callback`` supplied at construction time is
+        invoked with an ``ApprovalRequest`` instance.
+
+        Returns:
+            ``True`` if approved, ``False`` otherwise.
+        """
+        from agent_sentinel.approval import ApprovalClient, ApprovalStatus as _AS
+        if ApprovalClient.is_configured():
+            response = await ApprovalClient.request_approval_async(
+                action_name=action_name,
+                estimated_cost=estimated_cost,
+                context=context,
+                timeout_seconds=timeout,
+            )
+            return response.status == _AS.APPROVED
+
+        # Fall back to local callback
+        request = ApprovalRequest(
+            action_name=action_name,
+            action_description="",
+            inputs=context or {},
+            estimated_cost=estimated_cost,
+        )
+        if self._instance_callback is not None:
+            result = self._instance_callback(request)
+            return bool(result)
+        logger.error("No approval callback configured and ApprovalClient is not set up.")
+        return False
+
     @classmethod
     def set_approval_handler(
         cls,
@@ -173,7 +283,7 @@ class HumanApprovalHandler:
         logger.info("Async approval handler registered")
     
     @classmethod
-    async def request_approval_async(
+    async def _class_request_approval_async(
         cls,
         action_name: str,
         action_description: str,
@@ -183,8 +293,8 @@ class HumanApprovalHandler:
         timeout: int = 300
     ) -> ApprovalResponse:
         """
-        Request human approval for an action (async version).
-        
+        Request human approval for an action via class-level handler (async version).
+
         Raises:
             RuntimeError: If no approval handler is configured
         """
@@ -196,26 +306,26 @@ class HumanApprovalHandler:
             risk_level=risk_level,
             timeout_seconds=timeout
         )
-        
+
         if cls._approval_callback is None:
             logger.error("No async approval handler configured - action will be blocked")
             raise RuntimeError(
                 "Human approval required but no handler configured. "
                 "Call HumanApprovalHandler.set_async_approval_handler() to configure."
             )
-        
+
         logger.info(f"Requesting approval for action: {action_name}")
         response = await cls._approval_callback(request)
-        
+
         if response.status == ApprovalStatus.APPROVED:
             logger.info(f"Action '{action_name}' approved by {response.approver_email}")
         else:
             logger.warning(f"Action '{action_name}' rejected: {response.status}")
-        
+
         return response
-    
+
     @classmethod
-    def request_approval_sync(
+    def _class_request_approval_sync(
         cls,
         action_name: str,
         action_description: str,
@@ -225,8 +335,8 @@ class HumanApprovalHandler:
         timeout: int = 300
     ) -> ApprovalResponse:
         """
-        Request human approval for an action (sync version).
-        
+        Request human approval for an action via class-level handler (sync version).
+
         Raises:
             RuntimeError: If no approval handler is configured
         """
@@ -238,22 +348,22 @@ class HumanApprovalHandler:
             risk_level=risk_level,
             timeout_seconds=timeout
         )
-        
+
         if cls._sync_approval_callback is None:
             logger.error("No sync approval handler configured - action will be blocked")
             raise RuntimeError(
                 "Human approval required but no handler configured. "
                 "Call HumanApprovalHandler.set_approval_handler() to configure."
             )
-        
+
         logger.info(f"Requesting approval for action: {action_name}")
         response = cls._sync_approval_callback(request)
-        
+
         if response.status == ApprovalStatus.APPROVED:
             logger.info(f"Action '{action_name}' approved by {response.approver_email}")
         else:
             logger.warning(f"Action '{action_name}' rejected: {response.status}")
-        
+
         return response
 
 

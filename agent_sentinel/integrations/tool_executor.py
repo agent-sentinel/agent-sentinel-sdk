@@ -14,9 +14,51 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..guard import guarded_action
-from ..errors import AgentSentinelError, EvidenceViolationError
+from ..errors import AgentSentinelError
 
 logger = logging.getLogger("agent_sentinel.integrations.tool_executor")
+
+
+def _remediation_of(error: AgentSentinelError) -> Optional[dict]:
+    """
+    Build the blocked-action payload handed back to the model.
+
+    The published release had two different shapes here, and both have callers:
+
+      - evidence violations returned the bare RemediationPayload dict, so
+        callers read ``["reason_code"]`` and ``["retry_guidance"]``
+      - every other error returned ``error.to_dict()``, so callers read
+        ``["message"]``, ``["error_code"]``, ``["details"]``, ``["recoverable"]``
+
+    Picking either one alone breaks the other group. The two key sets are
+    disjoint, so this flattens them into a single dict that satisfies both:
+
+        {error_type, error_code, message, details, recoverable,
+         reason_code, retry_guidance, safe_alternatives, ...}
+
+    A nested ``remediation`` key is also included so new code has one obvious
+    place to look without relying on the flattening.
+    """
+    if not hasattr(error, "to_dict"):
+        return None
+
+    payload = error.to_dict()
+
+    remediation = getattr(error, "remediation", None)
+    if remediation is None or not hasattr(remediation, "to_dict"):
+        return payload
+
+    guidance = remediation.to_dict()
+
+    # Guard the disjointness assumption rather than trusting it forever: if a
+    # future payload field ever collides with an error field, the error field
+    # wins at top level and the guidance stays reachable under "remediation".
+    for key, value in guidance.items():
+        if key not in payload:
+            payload[key] = value
+
+    payload["remediation"] = guidance
+    return payload
 
 
 @dataclass
@@ -116,21 +158,17 @@ class SentinelToolExecutor:
                 tool_name=name,
                 output=output,
             )
-        except EvidenceViolationError as e:
-            return ToolResult(
-                tool_call_id=tool_call_id,
-                tool_name=name,
-                blocked=True,
-                error=str(e),
-                remediation=e.remediation.to_dict(),
-            )
         except AgentSentinelError as e:
+            # Every violation type that carries a RemediationPayload surfaces it
+            # here — evidence, deny list, allowlist, rate limit, budget. Errors
+            # without one (network, replay divergence) fall back to their error
+            # dict, which is diagnostic rather than actionable.
             return ToolResult(
                 tool_call_id=tool_call_id,
                 tool_name=name,
                 blocked=True,
                 error=str(e),
-                remediation=e.to_dict() if hasattr(e, 'to_dict') else None,
+                remediation=_remediation_of(e),
             )
 
     async def async_execute_tool(
@@ -160,21 +198,17 @@ class SentinelToolExecutor:
                 tool_name=name,
                 output=output,
             )
-        except EvidenceViolationError as e:
-            return ToolResult(
-                tool_call_id=tool_call_id,
-                tool_name=name,
-                blocked=True,
-                error=str(e),
-                remediation=e.remediation.to_dict(),
-            )
         except AgentSentinelError as e:
+            # Every violation type that carries a RemediationPayload surfaces it
+            # here — evidence, deny list, allowlist, rate limit, budget. Errors
+            # without one (network, replay divergence) fall back to their error
+            # dict, which is diagnostic rather than actionable.
             return ToolResult(
                 tool_call_id=tool_call_id,
                 tool_name=name,
                 blocked=True,
                 error=str(e),
-                remediation=e.to_dict() if hasattr(e, 'to_dict') else None,
+                remediation=_remediation_of(e),
             )
 
     def get_tool_names(self) -> List[str]:

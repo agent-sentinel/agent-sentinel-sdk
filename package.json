@@ -1,0 +1,9 @@
+{
+  "name": "agentsentinel-sdk-py",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Turbo shim so the root pnpm test/lint gates run the Python SDK suite (uv workspace member).",
+  "scripts": {
+    "test": "uv run --frozen --all-packages pytest tests -q -p no:cacheprovider"
+  }
+}

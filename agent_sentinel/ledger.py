@@ -138,6 +138,8 @@ class Ledger:
         task_id: Optional[str] = None,
         mission_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        inputs_redacted: bool = False,
+        impact: Optional[str] = None,
     ):
         """
         Appends a structured log entry to the local JSONL file.
@@ -161,6 +163,12 @@ class Ledger:
             outcome: "success" or "error"
             tags: List of tags for categorization
             compliance_metadata: Optional EU compliance metadata dict (Enterprise Tier)
+            inputs_redacted: True if the caller already stripped secrets out of
+                `inputs` (e.g. via redaction.redact_inputs). Recorded on the
+                entry so downstream consumers know inputs were sanitized.
+            impact: Declared impact of the action ("read", "low", "medium",
+                or "high", see guarded_action(impact=...)). Sent to the
+                platform in this same entry on ingest.
         """
         # Lazy initialization
         if not cls._initialized:
@@ -185,7 +193,7 @@ class Ledger:
                 "outputs": outputs
             }
         }
-        
+
         # Phase 5: Add compliance metadata if present (Enterprise Tier)
         if compliance_metadata:
             entry["compliance_metadata"] = compliance_metadata
@@ -197,6 +205,10 @@ class Ledger:
             entry["task_id"] = task_id
         if mission_id is not None:
             entry["mission_id"] = mission_id
+        if inputs_redacted:
+            entry["inputs_redacted"] = True
+        if impact is not None:
+            entry["impact"] = impact
 
         try:
             # We use 'a' (append) mode. 

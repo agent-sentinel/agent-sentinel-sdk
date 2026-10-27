@@ -430,7 +430,53 @@ class TestContextualBehavior:
         async def async_in_context():
             await asyncio.sleep(0.001)
             return "async_context_result"
-        
+
         result = await async_in_context()
         assert result == "async_context_result"
+
+
+class TestGuardKillSwitchRunId:
+    """t18: guard.py must probe the kill switch with run_id, sync and async."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_kill_switch(self):
+        from agent_sentinel.kill_switch import KillSwitchClient
+        KillSwitchClient.reset()
+        yield
+        KillSwitchClient.reset()
+
+    def test_sync_path_passes_run_id_to_kill_switch_probe(self) -> None:
+        from agent_sentinel.context import ExecutionContext
+        from agent_sentinel.kill_switch import KillSwitchClient
+
+        KillSwitchClient.configure(platform_url="https://api.test.com", api_token="tok")
+
+        @guarded_action(name="sync_risky", agent_id="agent-1")
+        def sync_risky():
+            return "ran"
+
+        with patch.object(KillSwitchClient, "check_or_raise") as mock_check:
+            with ExecutionContext(run_id="run-sync-1"):
+                assert sync_risky() == "ran"
+
+        mock_check.assert_called_once()
+        assert mock_check.call_args.kwargs["run_id"] == "run-sync-1"
+
+    @pytest.mark.asyncio
+    async def test_async_path_passes_run_id_to_kill_switch_probe(self) -> None:
+        from agent_sentinel.context import ExecutionContext
+        from agent_sentinel.kill_switch import KillSwitchClient
+
+        KillSwitchClient.configure(platform_url="https://api.test.com", api_token="tok")
+
+        @guarded_action(name="async_risky", agent_id="agent-1")
+        async def async_risky():
+            return "ran"
+
+        with patch.object(KillSwitchClient, "check_or_raise") as mock_check:
+            with ExecutionContext(run_id="run-async-1"):
+                assert await async_risky() == "ran"
+
+        mock_check.assert_called_once()
+        assert mock_check.call_args.kwargs["run_id"] == "run-async-1"
 

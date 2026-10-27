@@ -27,7 +27,16 @@ from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field
 
 from .cost import CostTracker
-from .errors import BudgetExceededError, PolicyViolationError, EvidenceViolationError
+from .context import build_identity_headers
+from ._defaults import resolve_api_token, resolve_platform_url
+from .errors import (
+    BudgetExceededError,
+    PolicyViolationError,
+    EvidenceViolationError,
+    PolicyNotConfiguredError,
+    NoPolicyForWriteError,
+)
+from .intervention import InterventionTracker, InterventionType, InterventionOutcome
 
 logger = logging.getLogger("agent_sentinel")
 
@@ -99,18 +108,29 @@ class PolicyConfig:
     pii_default_enabled: bool = False
     moderation_default_enabled: bool = False
     loop_default_enabled: bool = False
+    # Budget warning thresholds (percentage of budget consumed at which to emit a BUDGET_WARNING)
+    budget_warning_thresholds: List[int] = field(default_factory=lambda: [80])
 
 
 @dataclass
 class RemotePolicyConfig:
-    """Configuration for remote policy synchronization."""
-    platform_url: str
-    api_token: str
+    """Configuration for remote policy synchronization.
+
+    ``platform_url`` defaults to the hosted platform (overridable with
+    AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL) and ``api_token`` to
+    AGENT_SENTINEL_API_KEY.
+    """
+    platform_url: Optional[str] = None
+    api_token: Optional[str] = None
     agent_id: Optional[str] = None
     run_id: Optional[str] = None
     refresh_interval: float = 300.0  # 5 minutes default
     cache_ttl: float = 600.0  # 10 minutes cache TTL
     enabled: bool = True
+
+    def __post_init__(self) -> None:
+        self.platform_url = resolve_platform_url(self.platform_url)
+        self.api_token = resolve_api_token(self.api_token)
 
 
 class RateLimiter:
@@ -157,11 +177,17 @@ class RateLimiter:
             # Check if we've exceeded the limit
             if len(history) >= max_count:
                 oldest = history[0]
-                wait_time = int(oldest + window_seconds - now)
+                wait_time = max(0, int(oldest + window_seconds - now))
                 raise PolicyViolationError(
                     f"Rate limit exceeded for action '{action}': "
                     f"{max_count} calls per {window_seconds}s. "
-                    f"Retry in {wait_time}s"
+                    f"Retry in {wait_time}s",
+                    policy_rule="rate_limits",
+                    action_name=action,
+                    reason_code="RATE_LIMITED",
+                    retry_after_seconds=float(wait_time),
+                    # Unlike a deny list, this clears on its own.
+                    recoverable=True,
                 )
             
             # Record this action
@@ -297,8 +323,7 @@ class PolicyEngine:
         
         # Enable remote sync
         PolicyEngine.enable_remote_sync(
-            platform_url="https://api.agentsentinel.dev",
-            api_token="your-jwt-token",
+            api_token="your-api-key",
             refresh_interval=300  # 5 minutes
         )
         
@@ -322,7 +347,199 @@ class PolicyEngine:
     _sync_thread: Optional[threading.Thread] = None
     _stop_sync: threading.Event = threading.Event()
     _sync_lock: threading.Lock = threading.Lock()
-    
+
+    # Enforcement mode. "fail_open" permits everything when unconfigured, so
+    # a config or telemetry problem never breaks a caller's agent — the
+    # pre-0.4 default. "fail_closed" blocks every action instead, which is
+    # what a deployed control needs — a proxy that cannot find its policy and
+    # silently passes every action is an undetected control failure.
+    # "fail_closed_writes" — the default since 0.4.0 — splits the difference
+    # using the action's declared impact (guarded_action(impact=...), default
+    # "medium"): impact "medium"/"high" actions block with
+    # NoPolicyForWriteError the same as fail_closed, while "read"/"low"
+    # actions proceed with a warning the same as fail_open. This applies
+    # whenever the policy layer cannot vouch for an action — unconfigured, a
+    # remote sync that has never produced a usable cache, or policy
+    # evaluation itself raising (see _handle_unconfigured and
+    # _raise_evaluation_error).
+    #
+    # This is a breaking change from the 0.3.x "fail_open" default, kept
+    # available for one more minor version via
+    # AGENT_SENTINEL_ENFORCEMENT=fail_open.
+    _enforcement_mode: str = "fail_closed_writes"
+    _enforcement_mode_explicit: bool = False
+    _env_enforcement_checked: bool = False
+    _unconfigured_warning_emitted: bool = False
+    # Set via set_enforcement_mode(mode, pin=True) / configure(fail_closed=...).
+    # A pinned mode survives reset() (see reset()'s clear_pin argument): tests
+    # and hosts that reset engine state between runs must keep the
+    # operator-configured enforcement mode until configure() changes it or
+    # conftest clears the pin, not silently revert to the default.
+    _enforcement_mode_pinned: bool = False
+
+    VALID_ENFORCEMENT_MODES = ("fail_open", "fail_closed_writes", "fail_closed")
+    # "read"/"low" proceed under fail_closed_writes; anything else -- declared
+    # "medium"/"high" or an unrecognised value -- is treated as a write.
+    _LOW_IMPACT_LEVELS = frozenset({"read", "low"})
+
+    @classmethod
+    def set_enforcement_mode(cls, mode: str, pin: bool = False) -> None:
+        """
+        Set behaviour for actions checked while the policy layer cannot
+        vouch for them (unconfigured, or policy evaluation itself raises).
+
+        Args:
+            mode: "fail_open" to permit unpoliced actions regardless of
+                impact; "fail_closed_writes" (the default since 0.4.0) to
+                block impact "medium"/"high" actions with
+                NoPolicyForWriteError and permit "read"/"low" ones with a
+                warning; or "fail_closed" to block every action with
+                PolicyNotConfiguredError regardless of declared impact.
+            pin: If True, this mode survives reset() (see reset()'s
+                clear_pin argument) instead of reverting to the default.
+
+        Raises:
+            ValueError: if mode is not a recognised enforcement mode.
+        """
+        normalized = (mode or "").strip().lower()
+        if normalized not in cls.VALID_ENFORCEMENT_MODES:
+            raise ValueError(
+                f"Unknown enforcement mode: {mode!r}. "
+                f"Expected one of {cls.VALID_ENFORCEMENT_MODES}."
+            )
+        cls._enforcement_mode = normalized
+        cls._enforcement_mode_explicit = True
+        cls._unconfigured_warning_emitted = False
+        if pin:
+            cls._enforcement_mode_pinned = True
+        logger.info("Policy enforcement mode set to '%s'", normalized)
+
+    @classmethod
+    def resolve_enforcement_mode(cls, fail_closed: Optional[bool] = None) -> str:
+        """
+        Resolve the effective enforcement mode for a single check.
+
+        Precedence: an explicit ``fail_closed`` argument (e.g. from
+        ``guarded_action(fail_closed=...)``) beats the process-wide mode
+        (``set_enforcement_mode()`` / ``AGENT_SENTINEL_ENFORCEMENT`` / the
+        "fail_closed_writes" default). ``fail_closed`` is a two-way switch --
+        True resolves to "fail_closed", False to "fail_open"; there is no
+        per-call way to force "fail_closed_writes", since it is already the
+        process-wide default. Unlike ``set_enforcement_mode()``, this does
+        not mutate global state -- callers that want a lasting change should
+        pin it instead.
+        """
+        if fail_closed is not None:
+            return "fail_closed" if fail_closed else "fail_open"
+        return cls.get_enforcement_mode()
+
+    @classmethod
+    def get_enforcement_mode(cls) -> str:
+        """
+        Return the active enforcement mode, consulting the environment once.
+
+        AGENT_SENTINEL_ENFORCEMENT may be set to "fail_open",
+        "fail_closed_writes", or "fail_closed". An explicit
+        set_enforcement_mode() call always wins over the environment.
+
+        An unrecognised value raises ValueError, every call, not just the
+        first: an operator who typed it was turning enforcement on, and
+        falling back to fail_open would land permissive.
+        """
+        if not cls._enforcement_mode_explicit and not cls._env_enforcement_checked:
+            raw = os.environ.get("AGENT_SENTINEL_ENFORCEMENT", "").strip().lower()
+            if raw:
+                if raw in cls.VALID_ENFORCEMENT_MODES:
+                    cls._enforcement_mode = raw
+                    cls._env_enforcement_checked = True
+                    logger.info(
+                        "Policy enforcement mode set from environment: '%s'", raw
+                    )
+                else:
+                    # Deliberately do NOT mark the env as checked. Setting the
+                    # flag before raising made the typo throw exactly once and
+                    # then silently run fail_open for the rest of the process —
+                    # the precise outcome this raise exists to prevent.
+                    # Raise rather than fall back. An operator who typed this
+                    # was trying to turn enforcement ON; silently landing on
+                    # fail_open is the wrong direction to fail for a security
+                    # control, and it matches backend_from_env's contract for
+                    # the same class of typo.
+                    raise ValueError(
+                        f"Invalid AGENT_SENTINEL_ENFORCEMENT={raw!r}. "
+                        f"Expected one of {cls.VALID_ENFORCEMENT_MODES}."
+                    )
+            else:
+                cls._env_enforcement_checked = True
+        return cls._enforcement_mode
+
+    @classmethod
+    def _is_write_impact(cls, impact: Optional[str]) -> bool:
+        """
+        True for anything "fail_closed_writes" should block: declared
+        "medium"/"high" impact, a missing impact (guarded_action's own
+        default is "medium"), or an unrecognised value -- an unrecognised
+        impact string is exactly the kind of degraded state
+        "fail_closed_writes" exists to be conservative about.
+        """
+        return (impact or "medium") not in cls._LOW_IMPACT_LEVELS
+
+    @classmethod
+    def _handle_unconfigured(
+        cls,
+        action: str,
+        fail_closed: Optional[bool] = None,
+        impact: str = "medium",
+    ) -> None:
+        """
+        Decide what happens when an action is checked with no policy loaded.
+
+        Returns normally to permit the action; raises to block it. Under
+        "fail_closed_writes" (the default), the outcome also depends on the
+        action's declared impact.
+
+        Args:
+            action: Name of the action being checked.
+            fail_closed: Per-call override. See resolve_enforcement_mode().
+            impact: The action's declared impact ("read", "low", "medium",
+                or "high"). Only consulted under "fail_closed_writes".
+
+        Raises:
+            PolicyNotConfiguredError: when the resolved enforcement mode is
+                "fail_closed".
+            NoPolicyForWriteError: when the resolved enforcement mode is
+                "fail_closed_writes" and impact is "medium"/"high".
+        """
+        mode = cls.resolve_enforcement_mode(fail_closed)
+        if mode == "fail_closed":
+            raise PolicyNotConfiguredError(action_name=action)
+        if mode == "fail_closed_writes" and cls._is_write_impact(impact):
+            raise NoPolicyForWriteError(action_name=action, impact=impact)
+
+        # Warn once per configuration, not per call: an agent making thousands
+        # of tool calls would otherwise flood the log and the warning would be
+        # ignored, which defeats the point of raising it.
+        if not cls._unconfigured_warning_emitted:
+            cls._unconfigured_warning_emitted = True
+            if mode == "fail_closed_writes":
+                logger.warning(
+                    "Policy engine is not configured; permitting action "
+                    "'%s' (impact=%r) because enforcement mode is "
+                    "'fail_closed_writes', which only blocks impact "
+                    "'medium'/'high' actions. Load a policy, or set "
+                    "enforcement mode to 'fail_closed' to block every "
+                    "action regardless of declared impact.",
+                    action, impact,
+                )
+            else:
+                logger.warning(
+                    "Policy engine is not configured; permitting all actions "
+                    "(enforcement mode 'fail_open'). No budget, deny list, rate "
+                    "limit, or evidence rule is being enforced. Load a policy, or "
+                    "set enforcement mode to 'fail_closed' to block instead."
+                )
+
+
     @classmethod
     def configure(
         cls,
@@ -339,6 +556,7 @@ class PolicyEngine:
         evidence_actions: Optional[List[str]] = None,
         argument_constraints: Optional[Dict[str, dict]] = None,
         grounding_rules: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None,
+        fail_closed: Optional[bool] = None,
     ) -> None:
         """
         Configure policy engine programmatically.
@@ -356,7 +574,44 @@ class PolicyEngine:
             commit_actions: List of state-changing commit actions
             evidence_actions: List of evidence-producing actions
             argument_constraints: Dict of action -> JSON Schema for argument validation
+            fail_closed: Pin the enforcement mode for this process (see
+                set_enforcement_mode(pin=True)). True pins "fail_closed",
+                False pins "fail_open", None (default) leaves it unchanged.
+                Passing this alone, with no budget/deny-list/allow-list
+                argument, does NOT install a policy: doing so would mark the
+                engine "configured" with an empty, permissive PolicyConfig,
+                which defeats the point of fail_closed.
         """
+        if fail_closed is not None:
+            cls.set_enforcement_mode(
+                "fail_closed" if fail_closed else "fail_open", pin=True
+            )
+
+        has_policy_args = any(
+            v is not None
+            for v in (
+                session_budget,
+                run_budget,
+                action_budgets,
+                denied_actions,
+                allowed_actions,
+                rate_limits,
+                evidence_requirements,
+                evidence_max_age_seconds,
+                commit_actions,
+                evidence_actions,
+                argument_constraints,
+                grounding_rules,
+            )
+        )
+        if not has_policy_args:
+            logger.debug(
+                "PolicyEngine.configure() called with no policy arguments; "
+                "no PolicyConfig installed (intentional no-op, e.g. a "
+                "fail_closed-only call)"
+            )
+            return
+
         cls._config = PolicyConfig(
             session_budget=session_budget,
             run_budget=run_budget,
@@ -489,8 +744,8 @@ class PolicyEngine:
     @classmethod
     def enable_remote_sync(
         cls,
-        platform_url: str,
-        api_token: str,
+        platform_url: Optional[str] = None,
+        api_token: Optional[str] = None,
         agent_id: Optional[str] = None,
         run_id: Optional[str] = None,
         refresh_interval: float = 300.0,
@@ -503,8 +758,10 @@ class PolicyEngine:
         Uses local cache to minimize network calls and handle offline scenarios.
         
         Args:
-            platform_url: Platform API base URL
-            api_token: JWT token for authentication
+            platform_url: Platform API base URL. Defaults to the hosted
+                platform; AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL
+                override it.
+            api_token: JWT token or API key. Defaults to AGENT_SENTINEL_API_KEY.
             agent_id: Optional agent identifier for agent-specific policies
             run_id: Optional run identifier for run-specific policies
             refresh_interval: Seconds between policy refreshes (default: 300 = 5 min)
@@ -515,7 +772,7 @@ class PolicyEngine:
             return
         
         cls._remote_config = RemotePolicyConfig(
-            platform_url=platform_url.rstrip("/"),
+            platform_url=platform_url,
             api_token=api_token,
             agent_id=agent_id,
             run_id=run_id,
@@ -587,9 +844,11 @@ class PolicyEngine:
             if cls._remote_config.run_id:
                 params["run_id"] = cls._remote_config.run_id
 
-            headers = {
-                "Authorization": f"Bearer {cls._remote_config.api_token}"
-            }
+            headers = build_identity_headers(
+                cls._remote_config.api_token,
+                agent_id=cls._remote_config.agent_id,
+                run_id=cls._remote_config.run_id,
+            )
 
             response = httpx.get(url, params=params, headers=headers, timeout=10.0)
 
@@ -845,7 +1104,14 @@ class PolicyEngine:
         return cls._initialized and cls._config is not None
     
     @classmethod
-    def check_action(cls, action: str, cost: float, kwargs: Optional[Dict[str, Any]] = None) -> None:
+    def check_action(
+        cls,
+        action: str,
+        cost: float,
+        kwargs: Optional[Dict[str, Any]] = None,
+        fail_closed: Optional[bool] = None,
+        impact: str = "medium",
+    ) -> None:
         """
         Check if an action is permitted under current policy.
 
@@ -856,45 +1122,251 @@ class PolicyEngine:
             action: Name of the action to check
             cost: Proposed cost of the action in USD
             kwargs: Optional action arguments (for evidence and argument constraint checks)
+            fail_closed: Per-call enforcement override. See
+                resolve_enforcement_mode().
+            impact: Declared impact ("read", "low", "medium", or "high").
+                Only consulted when the policy layer cannot vouch for the
+                action (unconfigured or an evaluation error), under the
+                default "fail_closed_writes" mode.
 
         Raises:
-            PolicyViolationError: If action is denied or rate limit exceeded
+            PolicyViolationError: If action is denied, rate limit exceeded,
+                the policy layer could not vouch for a write-impact action
+                under fail_closed_writes (reason_code NO_POLICY_FOR_WRITE),
+                or policy evaluation itself raised unexpectedly under
+                fail_closed (reason_code EVALUATION_ERROR)
             BudgetExceededError: If budget would be exceeded
             EvidenceViolationError: If required evidence is missing or stale
         """
-        # If not configured, allow everything (fail-open)
+        # No policy loaded: behaviour depends on enforcement mode and, under
+        # fail_closed_writes (the default), on the action's declared impact.
         if not cls.is_configured():
+            cls._handle_unconfigured(action, fail_closed=fail_closed, impact=impact)
             return
 
         config = cls._config
 
-        # 1. Check denied/allowed lists
+        try:
+            # 1. Check denied/allowed lists
+            if action in config.denied_actions:
+                raise PolicyViolationError(
+                    f"Action '{action}' is on the denied list",
+                    policy_rule="denied_actions",
+                    action_name=action,
+                    reason_code="DENIED_ACTION",
+                    recoverable=False,
+                )
+
+            if config.allowed_actions and action not in config.allowed_actions:
+                raise PolicyViolationError(
+                    f"Action '{action}' is not on the allowed list. "
+                    f"Permitted: {config.allowed_actions}",
+                    policy_rule="allowed_actions",
+                    action_name=action,
+                    reason_code="NOT_IN_ALLOWLIST",
+                    safe_alternatives=list(config.allowed_actions),
+                    recoverable=False,
+                )
+
+            # 2. Check rate limits
+            if action in config.rate_limits:
+                limits = config.rate_limits[action]
+                max_count = limits.get("max_count", 999999)
+                window_seconds = limits.get("window_seconds", 60)
+                cls._rate_limiter.check_rate_limit(action, max_count, window_seconds)
+
+            # 3-5. Budgets. Reads and compares without reserving, so concurrent
+            # callers can each pass before any of them records. check_and_reserve()
+            # closes that window; this path stays for callers that only want to ask.
+            cls._check_budgets_readonly(action, cost, config)
+
+            # 6-8. Evidence, argument constraints, groundedness.
+            cls._check_evidence_and_args(action, config, kwargs)
+        except (PolicyViolationError, BudgetExceededError, EvidenceViolationError):
+            raise
+        except Exception as exc:  # policy evaluation itself is broken
+            cls._raise_evaluation_error(action, fail_closed, exc, impact=impact)
+
+    @classmethod
+    def check_and_reserve(
+        cls,
+        action: str,
+        cost: float,
+        kwargs: Optional[Dict[str, Any]] = None,
+        fail_closed: Optional[bool] = None,
+        impact: str = "medium",
+    ) -> None:
+        """
+        Check an action and atomically reserve its cost against every budget.
+
+        Same guarantees as ``check_action`` for deny lists, allowlists, rate
+        limits, guardrails and evidence, but the budget comparison and the
+        spend record happen inside a single lock hold. That is what makes a
+        budget a real cap when workers run concurrently: reading the total and
+        recording the spend as two steps lets every worker pass the same check
+        before any of them records.
+
+        The caller must NOT separately record this cost — reserving records it.
+
+        Args:
+            action: Name of the action to check
+            cost: Proposed cost of the action in USD
+            kwargs: Optional action arguments
+            fail_closed: Per-call enforcement override. See
+                resolve_enforcement_mode().
+            impact: Declared impact ("read", "low", "medium", or "high").
+                See check_action.
+
+        Raises:
+            PolicyViolationError, BudgetExceededError, EvidenceViolationError,
+            PolicyNotConfiguredError: as check_action.
+        """
+        if not cls.is_configured():
+            cls._handle_unconfigured(action, fail_closed=fail_closed, impact=impact)
+            # Unpoliced but still counted, so totals stay accurate.
+            CostTracker.add_cost(action, cost)
+            return
+
+        config = cls._config
+
+        # Everything that can reject runs before the reservation, or a blocked
+        # action consumes budget it never spent.
+        try:
+            cls._check_non_budget_rules(action, config)
+            cls._check_evidence_and_args(action, config, kwargs)
+        except (PolicyViolationError, BudgetExceededError, EvidenceViolationError):
+            raise
+        except Exception as exc:  # policy evaluation itself is broken
+            cls._raise_evaluation_error(action, fail_closed, exc, impact=impact)
+
+        try:
+            rejection = CostTracker.try_reserve(
+                action,
+                cost,
+                session_budget=config.session_budget,
+                run_budget=config.run_budget,
+                action_budget=config.action_budgets.get(action),
+            )
+        except (PolicyViolationError, BudgetExceededError, EvidenceViolationError):
+            raise
+        except Exception as exc:  # policy evaluation itself is broken
+            cls._raise_evaluation_error(action, fail_closed, exc, impact=impact)
+            return  # unreachable: _raise_evaluation_error always raises
+
+        if rejection is not None:
+            raise BudgetExceededError(
+                f"{rejection.budget_type.capitalize()} budget exceeded: "
+                f"{rejection.spent:.4f} > {rejection.limit:.4f} USD",
+                spent=rejection.spent,
+                limit=rejection.limit,
+                budget_type=rejection.budget_type,
+            )
+
+    @classmethod
+    def _raise_evaluation_error(
+        cls,
+        action: str,
+        fail_closed: Optional[bool],
+        exc: Exception,
+        impact: str = "medium",
+    ) -> None:
+        """
+        Handle an unexpected exception raised while evaluating policy.
+
+        Under "fail_closed", always wraps it in a PolicyViolationError
+        (reason_code EVALUATION_ERROR) so a bug in policy evaluation blocks
+        the action rather than crashing past the control entirely. Under the
+        default "fail_closed_writes", the same wrap happens but only for
+        impact "medium"/"high" (reason_code NO_POLICY_FOR_WRITE instead) --
+        a broken evaluator is exactly the "can't vouch for this" state that
+        mode exists to be conservative about for writes, while reads keep
+        working. Under "fail_open", re-raises unchanged — today's behaviour,
+        preserved.
+
+        Always raises; never returns.
+        """
+        mode = cls.resolve_enforcement_mode(fail_closed)
+        if mode == "fail_open":
+            raise exc
+        if mode == "fail_closed_writes":
+            if not cls._is_write_impact(impact):
+                raise exc
+            raise NoPolicyForWriteError(
+                action_name=action,
+                impact=impact,
+                message=(
+                    f"Policy evaluation for '{action}' raised an unexpected "
+                    f"error ({exc}) and enforcement mode is "
+                    f"'fail_closed_writes', so the impact={impact!r} action "
+                    "was blocked."
+                ),
+            ) from exc
+        raise PolicyViolationError(
+            f"Policy evaluation for '{action}' raised an unexpected error: {exc}",
+            policy_rule="evaluation_error",
+            action_name=action,
+            reason_code="EVALUATION_ERROR",
+            recoverable=False,
+        ) from exc
+
+    @classmethod
+    def _check_non_budget_rules(cls, action: str, config: Any) -> None:
+        """Deny list, allowlist and rate limit. Shared by both entry points."""
         if action in config.denied_actions:
             raise PolicyViolationError(
-                f"Action '{action}' is on the denied list"
+                f"Action '{action}' is on the denied list",
+                policy_rule="denied_actions",
+                action_name=action,
+                reason_code="DENIED_ACTION",
+                recoverable=False,
             )
 
         if config.allowed_actions and action not in config.allowed_actions:
             raise PolicyViolationError(
                 f"Action '{action}' is not on the allowed list. "
-                f"Permitted: {config.allowed_actions}"
+                f"Permitted: {config.allowed_actions}",
+                policy_rule="allowed_actions",
+                action_name=action,
+                reason_code="NOT_IN_ALLOWLIST",
+                safe_alternatives=list(config.allowed_actions),
+                recoverable=False,
             )
 
-        # 2. Check rate limits
         if action in config.rate_limits:
             limits = config.rate_limits[action]
-            max_count = limits.get("max_count", 999999)
-            window_seconds = limits.get("window_seconds", 60)
-            cls._rate_limiter.check_rate_limit(action, max_count, window_seconds)
+            cls._rate_limiter.check_rate_limit(
+                action,
+                limits.get("max_count", 999999),
+                limits.get("window_seconds", 60),
+            )
 
+    @classmethod
+    def _check_budgets_readonly(cls, action: str, cost: float, config: Any) -> None:
+        """Budget comparison without reserving. See check_and_reserve."""
         # 3. Check session budget
         if config.session_budget is not None:
             current_session = CostTracker.get_session_total()
-            if current_session + cost > config.session_budget:
+            session_projected = current_session + cost
+            if config.session_budget > 0:
+                session_pct = (session_projected / config.session_budget) * 100
+                warning_thresholds = getattr(config, "budget_warning_thresholds", [80])
+                for threshold in sorted(warning_thresholds, reverse=True):
+                    if session_pct >= threshold:
+                        InterventionTracker.record(
+                            intervention_type=InterventionType.BUDGET_WARNING,
+                            outcome=InterventionOutcome.WARNED,
+                            action_name=action,
+                            reason=(
+                                f"Session budget {threshold}% threshold reached "
+                                f"({session_pct:.1f}% used, ${session_projected:.4f} of ${config.session_budget:.4f})"
+                            ),
+                        )
+                        break  # Only emit the highest crossed threshold
+            if session_projected > config.session_budget:
                 raise BudgetExceededError(
                     f"Session budget exceeded: {current_session:.4f} + {cost:.4f} "
                     f"> {config.session_budget:.4f} USD",
-                    spent=current_session + cost,
+                    spent=session_projected,
                     limit=config.session_budget,
                     budget_type="session"
                 )
@@ -902,11 +1374,27 @@ class PolicyEngine:
         # 4. Check run budget
         if config.run_budget is not None:
             current_run = CostTracker.get_run_total()
-            if current_run + cost > config.run_budget:
+            run_projected = current_run + cost
+            if config.run_budget > 0:
+                run_pct = (run_projected / config.run_budget) * 100
+                warning_thresholds = getattr(config, "budget_warning_thresholds", [80])
+                for threshold in sorted(warning_thresholds, reverse=True):
+                    if run_pct >= threshold:
+                        InterventionTracker.record(
+                            intervention_type=InterventionType.BUDGET_WARNING,
+                            outcome=InterventionOutcome.WARNED,
+                            action_name=action,
+                            reason=(
+                                f"Run budget {threshold}% threshold reached "
+                                f"({run_pct:.1f}% used, ${run_projected:.4f} of ${config.run_budget:.4f})"
+                            ),
+                        )
+                        break  # Only emit the highest crossed threshold
+            if run_projected > config.run_budget:
                 raise BudgetExceededError(
                     f"Run budget exceeded: {current_run:.4f} + {cost:.4f} "
                     f"> {config.run_budget:.4f} USD",
-                    spent=current_run + cost,
+                    spent=run_projected,
                     limit=config.run_budget,
                     budget_type="run"
                 )
@@ -926,6 +1414,16 @@ class PolicyEngine:
                     budget_type="action"
                 )
 
+    @classmethod
+    def _check_evidence_and_args(
+        cls, action: str, config: Any, kwargs: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Evidence requirements, argument constraints and groundedness.
+
+        Split out so check_and_reserve can run these BEFORE reserving budget:
+        a reservation must be the last thing that can fail.
+        """
         # 6. Check evidence requirements
         if action in config.evidence_requirements:
             from .evidence import EvidenceTracker
@@ -1075,6 +1573,25 @@ class PolicyEngine:
                 raise error
 
     @classmethod
+    def apply_config(cls, config: Optional[PolicyConfig]) -> None:
+        """
+        Install a previously captured PolicyConfig.
+
+        The counterpart to get_config(). configure() only accepts a subset of
+        PolicyConfig's fields, so it cannot faithfully restore a snapshot —
+        approval settings and evidence rules would be silently dropped. Use
+        this to save and restore policy around code that calls reset():
+
+            saved = PolicyEngine.get_config()
+            ...                       # something that may reset the engine
+            PolicyEngine.apply_config(saved)
+
+        Passing None leaves the engine unconfigured, matching reset().
+        """
+        cls._config = config
+        cls._initialized = config is not None
+
+    @classmethod
     def get_config(cls) -> Optional[PolicyConfig]:
         """
         Get current policy configuration.
@@ -1150,12 +1667,24 @@ class PolicyEngine:
         return 3600  # Default 1 hour
     
     @classmethod
-    def reset(cls) -> None:
+    def reset(cls, *, clear_pin: bool = False) -> None:
         """
         Reset policy engine.
         
         Useful for testing. In production, you typically configure once
         at startup.
+
+        Args:
+            clear_pin: If True, also clear an enforcement mode pinned via
+                set_enforcement_mode(pin=True) / configure(fail_closed=...),
+                reverting to the SDK's own default ("fail_closed_writes",
+                see the _enforcement_mode class attribute above). Defaults
+                to False: the pin must survive reset() so tests and hosts
+                that reset engine state between runs keep the
+                operator-configured enforcement mode until configure()
+                changes it or conftest clears the pin. Test isolation
+                should pass True so a pinned mode cannot leak between
+                tests.
         """
         cls.stop_remote_sync()
         cls._config = None
@@ -1163,3 +1692,14 @@ class PolicyEngine:
         cls._remote_config = None
         cls._policy_cache = None
         cls._rate_limiter.reset()
+        # Enforcement state is global too: leaving it set meant opting
+        # into fail_closed poisoned everything later in the process. Revert
+        # to the SDK's own default rather than a hard-coded "fail_open" --
+        # a bare reset() is not an explicit opt-in to fail-open, and this is
+        # reachable by any host that resets engine state between agent runs.
+        if clear_pin or not cls._enforcement_mode_pinned:
+            cls._enforcement_mode = "fail_closed_writes"
+            cls._enforcement_mode_explicit = False
+            cls._env_enforcement_checked = False
+            cls._enforcement_mode_pinned = False
+        cls._unconfigured_warning_emitted = False

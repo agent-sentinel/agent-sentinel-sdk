@@ -225,10 +225,16 @@ class TestBackgroundSync:
         sync = BackgroundSync(config)
         
         result = sync._upload_batch([entries[0]])
-        
+
         assert result is True
         mock_client.post.assert_called_once()
-    
+
+        # Auth uses the Bearer scheme with the SDK's identity headers, not ApiKey.
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer test-token"
+        assert "ApiKey" not in headers["Authorization"]
+        assert "User-Agent" in headers
+
     @patch("agent_sentinel.sync.HTTPX_AVAILABLE", True)
     @patch("httpx.Client")
     def test_upload_auth_failure(self, mock_httpx):

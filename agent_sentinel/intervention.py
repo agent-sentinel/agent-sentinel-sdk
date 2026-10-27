@@ -25,6 +25,7 @@ class InterventionType(str, Enum):
     APPROVAL_REQUIRED = "approval_required"  # Escalated for human approval
     RATE_LIMITED = "rate_limited"          # Blocked due to rate limiting
     BUDGET_EXCEEDED = "budget_exceeded"    # Blocked due to budget constraints
+    BUDGET_WARNING = "budget_warning"      # Soft warning before budget is exhausted
     DOWNGRADE = "downgrade"                # Action parameters modified/reduced
     WARNING = "warning"                    # Allowed but flagged as risky
     MISSING_EVIDENCE = "missing_evidence"  # Blocked due to missing prerequisite evidence

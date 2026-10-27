@@ -9,6 +9,7 @@ flush() tears everything down cleanly (sync stops, policy refresh stops).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("agent_sentinel")
@@ -16,15 +17,19 @@ logger = logging.getLogger("agent_sentinel")
 
 def configure(
     api_key: str,
-    platform_url: str,
+    platform_url: Optional[str] = None,
     agent_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    harness: Optional[str] = None,
+    principal: Optional[str] = None,
     # Budget / policy shortcuts
     run_budget: Optional[float] = None,
     session_budget: Optional[float] = None,
     action_budgets: Optional[Dict[str, float]] = None,
     denied_actions: Optional[List[str]] = None,
     rate_limits: Optional[Dict] = None,
+    # Enforcement
+    fail_closed: Optional[bool] = None,
     # Auto-instrumentation
     auto_instrument: bool = False,
 ) -> None:
@@ -40,25 +45,58 @@ def configure(
 
     Args:
         api_key: Platform API key (ApiKey <token> format accepted).
-        platform_url: Base URL of the AgentSentinel platform.
+        platform_url: Base URL of the AgentSentinel platform. Optional:
+            defaults to the hosted platform. AGENT_SENTINEL_PLATFORM_URL /
+            AGENT_SENTINEL_URL override it (self-hosted or staging).
         agent_id: Stable identifier for this agent type.
         run_id: ID for this specific run (auto-generated if None).
+        harness: Identifier for the agent harness/framework running this
+            process (e.g. "langchain", "crewai"). Falls back to
+            AGENT_SENTINEL_HARNESS if not passed.
+        principal: Identifier for the human or service on whose behalf this
+            agent is acting. Falls back to AGENT_SENTINEL_PRINCIPAL if not
+            passed.
         run_budget: Max USD for the current run (local override).
         session_budget: Max USD for the current session (local override).
         action_budgets: Per-action spend caps {action_name: max_usd}.
         denied_actions: Action names to block locally (pre-platform check).
         rate_limits: Rate limit config forwarded to PolicyEngine.
+        fail_closed: Pin the policy/kill-switch enforcement mode for this
+            process. True pins "fail_closed" (block when unconfigured or
+            unreachable); False pins "fail_open". None (default) leaves the
+            mode governed by AGENT_SENTINEL_ENFORCEMENT / the library
+            default. Passing this alone does not install a policy — combine
+            it with run_budget/action_budgets/denied_actions, or with a
+            policy that arrives via remote sync, to actually enforce
+            something; otherwise every action is blocked until sync succeeds.
         auto_instrument: If True, attempt to auto-instrument LLM clients.
     """
     from .sync import enable_remote_sync
     from .policy import PolicyEngine
     from .context import ExecutionContext
+    from ._defaults import resolve_platform_url
+
+    platform_url = resolve_platform_url(platform_url)
+
+    # 0. Pin enforcement mode before anything else touches the engine, so
+    # remote sync and policy checks see it immediately.
+    if fail_closed is not None:
+        PolicyEngine.set_enforcement_mode(
+            "fail_closed" if fail_closed else "fail_open", pin=True
+        )
 
     # 1. Set up execution context with agent/run attribution
     # This ensures interventions are properly attributed
+    if harness is None:
+        harness = os.environ.get("AGENT_SENTINEL_HARNESS")
+    if principal is None:
+        principal = os.environ.get("AGENT_SENTINEL_PRINCIPAL")
+
     ExecutionContext(
         agent_id=agent_id,
         run_id=run_id,
+        harness=harness,
+        principal=principal,
     ).__enter__()
 
     # 2. Start background ledger sync

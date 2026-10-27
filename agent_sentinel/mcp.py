@@ -4,6 +4,11 @@ Model Context Protocol (MCP) Client for AgentSentinel SDK
 This module provides MCP client functionality for agents to discover and
 interact with AgentSentinel's platform capabilities via MCP.
 
+Note: this is a client for the legacy ``/api/v1/mcp/*`` REST facade. For
+MCP-native harnesses (Claude Code, Cursor, ...) use the ``agentsentinel-mcp``
+stdio proxy in ``agent_sentinel.mcp_proxy`` instead, which forwards
+``tools/list`` and ``tools/call`` to the platform's ``/mcp`` endpoint.
+
 MCP enables LLMs and agents to:
 - Discover available tools and resources
 - Query agent runs, actions, and policies
@@ -14,10 +19,7 @@ Example usage:
     from agent_sentinel.mcp import MCPClient
     
     # Initialize MCP client
-    client = MCPClient(
-        platform_url="https://api.agentsentinel.dev",
-        api_token="your-jwt-token"
-    )
+    client = MCPClient(api_token="your-api-key")
     
     # Discover available tools
     tools = await client.list_tools()
@@ -39,21 +41,31 @@ Example usage:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 try:
     import httpx
     HTTPX_AVAILABLE = True
 except ImportError:
     HTTPX_AVAILABLE = False
-    logging.warning(
-        "httpx not installed. MCP client requires httpx. "
-        "Install with: pip install agent-sentinel[remote]"
-    )
+
+from ._defaults import resolve_api_token, resolve_platform_url
+from .context import build_identity_headers
 
 logger = logging.getLogger("agent_sentinel.mcp")
+
+if not HTTPX_AVAILABLE:
+    # debug, on the module logger, not warning on the root logger. httpx is an
+    # optional extra; a plain `pip install agentsentinel-sdk` followed by the
+    # documented quickstart printed "WARNING:root: httpx not installed" before
+    # the user had done anything, which reads as a fault rather than a note.
+    # approval.py:31 already handles the same situation this way.
+    logger.debug(
+        "httpx not installed. MCP client disabled. "
+        "Install with: pip install agentsentinel-sdk[remote]"
+    )
 
 
 # ============================================================================
@@ -124,15 +136,14 @@ class MCPClient:
     - Use prompt templates for common workflows
     
     Args:
-        platform_url: AgentSentinel platform URL (e.g., "https://api.agentsentinel.dev")
-        api_token: JWT authentication token
+        platform_url: AgentSentinel platform URL. Defaults to the hosted
+            platform; AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL
+            override it (self-hosted or staging).
+        api_token: JWT token or API key. Defaults to AGENT_SENTINEL_API_KEY.
         timeout: Request timeout in seconds (default: 30)
     
     Example:
-        >>> client = MCPClient(
-        ...     platform_url="https://api.agentsentinel.dev",
-        ...     api_token="your-jwt-token"
-        ... )
+        >>> client = MCPClient(api_token="your-api-key")
         >>> 
         >>> # Discover tools
         >>> tools = await client.list_tools()
@@ -146,8 +157,8 @@ class MCPClient:
     
     def __init__(
         self,
-        platform_url: str,
-        api_token: str,
+        platform_url: Optional[str] = None,
+        api_token: Optional[str] = None,
         timeout: float = 30.0
     ):
         if not HTTPX_AVAILABLE:
@@ -156,8 +167,8 @@ class MCPClient:
                 "Install with: pip install agent-sentinel[remote]"
             )
         
-        self.platform_url = platform_url.rstrip("/")
-        self.api_token = api_token
+        self.platform_url = resolve_platform_url(platform_url)
+        self.api_token = resolve_api_token(api_token)
         self.timeout = timeout
         
         # Build API base URL
@@ -174,12 +185,11 @@ class MCPClient:
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client"""
         if self._client is None:
+            headers = build_identity_headers(self.api_token)
+            headers["Content-Type"] = "application/json"
             self._client = httpx.AsyncClient(
                 timeout=self.timeout,
-                headers={
-                    "Authorization": f"Bearer {self.api_token}",
-                    "Content-Type": "application/json"
-                }
+                headers=headers,
             )
         return self._client
     
@@ -597,24 +607,23 @@ _default_client: Optional[MCPClient] = None
 
 
 def set_default_client(
-    platform_url: str,
-    api_token: str,
+    platform_url: Optional[str] = None,
+    api_token: Optional[str] = None,
     timeout: float = 30.0
 ):
     """
     Set the default MCP client for module-level functions.
     
     Args:
-        platform_url: AgentSentinel platform URL
-        api_token: JWT authentication token
+        platform_url: AgentSentinel platform URL (defaults to the hosted
+            platform or the AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL
+            override)
+        api_token: JWT token or API key (defaults to AGENT_SENTINEL_API_KEY)
         timeout: Request timeout in seconds
     
     Example:
         >>> from agent_sentinel.mcp import set_default_client
-        >>> set_default_client(
-        ...     platform_url="https://api.agentsentinel.dev",
-        ...     api_token="your-jwt-token"
-        ... )
+        >>> set_default_client(api_token="your-api-key")
     """
     global _default_client
     _default_client = MCPClient(

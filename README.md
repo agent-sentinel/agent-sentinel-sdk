@@ -80,8 +80,10 @@ uv sync
 ```python
 from agent_sentinel import guarded_action
 
-# Decorate any function to track it
-@guarded_action(name="search_tool", cost_usd=0.01, tags=["search", "api"])
+# Decorate any function to track it. impact="read" declares this as a
+# read: since 0.4.0 the default enforcement mode blocks unconfigured
+# actions of impact "medium"/"high" (see Enforcement modes below).
+@guarded_action(name="search_tool", cost_usd=0.01, tags=["search", "api"], impact="read")
 def search_web(query: str) -> dict:
     """Search the web for a query"""
     results = call_search_api(query)
@@ -260,10 +262,9 @@ PolicyEngine.configure(
 ```python
 from agent_sentinel import enable_remote_sync, flush_and_stop
 
-# Start background sync
+# Start background sync to the hosted platform
 sync = enable_remote_sync(
-    platform_url="https://api.agentsentinel.dev",
-    api_token="your-jwt-token",
+    api_token="your-api-key",  # or set AGENT_SENTINEL_API_KEY
     flush_interval=10.0,  # Upload every 10 seconds
 )
 
@@ -280,8 +281,7 @@ from agent_sentinel import BackgroundSync, SyncConfig
 
 # Create custom sync config
 config = SyncConfig(
-    platform_url="https://api.agentsentinel.dev",
-    api_token="your-jwt-token",
+    api_token="your-api-key",
     run_id="custom-run-id",  # Optional
     flush_interval=5.0,
     batch_size=50,
@@ -298,6 +298,21 @@ sync.flush_now()
 # Stop with final flush
 sync.stop()
 ```
+
+**Platform URL:** every client (`configure`, `enable_remote_sync`,
+`SyncConfig`, `PolicyEngine.enable_remote_sync`, `KillSwitchClient`,
+`ApprovalClient`, `RemoteCostBackend`, `MCPClient`) connects to the hosted
+AgentSentinel platform by default, so `platform_url` is optional. The API key
+falls back to `AGENT_SENTINEL_API_KEY` when not passed.
+
+| Variable | Purpose |
+| --- | --- |
+| `AGENT_SENTINEL_API_KEY` | Platform API key, used when `api_token`/`api_key` is not passed |
+| `AGENT_SENTINEL_PLATFORM_URL` | Overrides the hosted platform URL (for self-hosted or staging) |
+| `AGENT_SENTINEL_URL` | Same override, lower precedence than `AGENT_SENTINEL_PLATFORM_URL` |
+
+Precedence: explicit `platform_url` argument > `AGENT_SENTINEL_PLATFORM_URL` >
+`AGENT_SENTINEL_URL` > hosted platform.
 
 **Fail-Open Design:**
 
@@ -393,6 +408,10 @@ Decorator to wrap a function with telemetry and cost tracking.
 - `name` (str, optional): Name for the action. Defaults to function name.
 - `cost_usd` (float, optional): Cost in USD for this action. Default: 0.0
 - `tags` (list[str], optional): Tags for categorization. Default: []
+- `impact` (`"read"` | `"low"` | `"medium"` | `"high"`, optional): Declared
+  consequentiality of the action. Default: `"medium"`. Sent to the platform
+  in the ledger entry and used by the `fail_closed_writes` enforcement mode
+  — see [Enforcement modes](#enforcement-modes).
 
 **Returns:**
 - Decorated function that logs telemetry and re-raises exceptions
@@ -430,6 +449,106 @@ except PolicyViolationError as e:
     print(f"Policy violation: {e}")
     # Log security incident
 ```
+
+### Enforcement modes
+
+As of 0.4.0, the default is `fail_closed_writes`: an unconfigured or
+unreachable `PolicyEngine` blocks write-impact actions and permits
+read-impact ones. **This is a breaking change from 0.3.x**, where an
+unconfigured engine permitted everything unconditionally — see the escape
+hatch below if you need the old behaviour for now.
+
+Every `@guarded_action` declares an `impact`:
+
+```python
+from agent_sentinel import guarded_action
+
+@guarded_action(name="read_balance", impact="read")   # or "low" — always proceeds
+def read_balance(account_id):
+    ...
+
+@guarded_action(name="transfer_funds")   # impact defaults to "medium" — a write
+def transfer_funds(from_account, to_account, amount):
+    ...
+```
+
+`impact` is one of `"read"`, `"low"`, `"medium"`, or `"high"` (default
+`"medium"`). It is sent to the platform in the ledger/ingest entry
+(`entry["impact"]`) and consulted locally whenever the policy layer cannot
+vouch for the action — unconfigured, a remote sync that has never produced a
+usable local cache, or policy evaluation itself raising an unexpected error:
+
+- `impact="medium"`/`"high"` (a write): **blocked** with
+  `NoPolicyForWriteError` (`reason_code="NO_POLICY_FOR_WRITE"`).
+- `impact="read"`/`"low"`: **permitted**, with a one-time warning logged.
+
+```python
+from agent_sentinel import PolicyEngine
+
+PolicyEngine.set_enforcement_mode("fail_open")     # or AGENT_SENTINEL_ENFORCEMENT=fail_open
+```
+
+**Escape hatch:** set `fail_open` explicitly (env var or
+`set_enforcement_mode`) to restore the exact pre-0.4 behaviour — an
+unconfigured engine permits every action regardless of declared impact —
+for one more minor version.
+
+```python
+PolicyEngine.set_enforcement_mode("fail_closed")   # or AGENT_SENTINEL_ENFORCEMENT=fail_closed
+```
+
+`fail_closed` remains available too: checking any action with no policy
+loaded raises `PolicyNotConfiguredError`, regardless of declared impact —
+use it in any deployment whose job is enforcing everything, not just writes.
+
+An unrecognised value in `AGENT_SENTINEL_ENFORCEMENT` raises rather than
+falling back — an operator who typed it was turning enforcement on.
+
+`PolicyEngine.reset()` is a test/ops utility with its own, independent
+contract: it reverts an unpinned mode to `fail_open`, not to the SDK's
+`fail_closed_writes` default. A real process that never calls `reset()` or
+`set_enforcement_mode()` sees `fail_closed_writes` from the start.
+
+### Sharing budgets across processes
+
+`CostTracker` keeps counters in process memory by default. That is exact for a
+single agent using `@guarded_action`, and wrong for anything multi-process — a
+proxy, a worker pool, a CLI invoked per tool call — where every process starts
+from a zero balance and budget enforcement silently stops working.
+
+```python
+from agent_sentinel import CostTracker, FileCostBackend
+
+CostTracker.set_backend(FileCostBackend("/var/lib/sentinel/costs.json"))
+```
+
+or, the usual path for a container:
+
+```bash
+AGENT_SENTINEL_COST_BACKEND=file
+AGENT_SENTINEL_COST_PATH=/var/lib/sentinel/costs.json
+```
+
+**`@guarded_action` reserves atomically.** Checking the budget and recording
+the spend as two separate calls is check-then-act: concurrent workers can all
+pass the check before any of them records, and the cap gets overshot. Measured
+with 6 threads against a $1.00 run budget at $0.50 each, the two-step path
+spends $3.00; reserving holds it at exactly $1.00 with 2 permitted and 4
+blocked.
+
+You get this by default — the decorator calls `PolicyEngine.check_and_reserve()`
+for you. **Do not call it yourself on an action that is already decorated**, or
+the spend is counted twice.
+
+```python
+# Only for code that is NOT using @guarded_action:
+PolicyEngine.check_and_reserve("transfer_funds", cost=0.50)
+# ...run the action. The reservation is the record; do not add the cost again.
+```
+
+`check_action()` remains available for callers that want to ask without
+reserving. For enforcement across multiple hosts, implement `CostBackend`
+against Redis or Postgres — the contract is five methods.
 
 ### CostTracker
 
@@ -725,6 +844,48 @@ response = openai.chat.completions.create(
 
 See `examples/llm_instrumentation.py` for more integrations.
 
+## 🔐 MCP proxy
+
+`agentsentinel-mcp` is a stdio MCP server for MCP-native harnesses such as
+Claude Code and Cursor. It answers `initialize` locally and forwards
+`tools/list` and `tools/call` to the platform's `/mcp` endpoint with an
+agent-bound API key, so the harness gets governed tools and the model never
+sees a credential. Results pass through unchanged, including `isError` and
+`structuredContent.reason_code` on refusals.
+
+```bash
+pip install "agentsentinel-sdk[mcp]"   # Python 3.10+
+```
+
+```json
+{
+  "mcpServers": {
+    "agentsentinel": {
+      "command": "agentsentinel-mcp",
+      "env": {
+        "AGENT_SENTINEL_API_KEY": "<agent-bound API key>",
+        "AGENT_SENTINEL_HARNESS": "claude-code"
+      }
+    }
+  }
+}
+```
+
+- `AGENT_SENTINEL_API_KEY` (required) must be an agent-bound key.
+- `AGENT_SENTINEL_URL` (optional) overrides the hosted platform URL (for
+  self-hosted or staging); the proxy targets `<url>/mcp`. `https` is required unless the host is `localhost` or
+  `127.0.0.1`.
+- `AGENT_SENTINEL_HARNESS` (optional) is sent as `X-Sentinel-Harness`.
+
+A missing key or a disallowed URL exits non-zero with a one-line message on
+stderr. The key is only ever sent in the upstream `Authorization` header and
+never appears in output, logs or MCP messages. Upstream 401/403 or transport
+failures surface as an MCP error (`tools/list`) or an `isError` tool result
+(`tools/call`). See the [Claude Code](https://docs.agentsentinel.dev/ai-tools/claude-code)
+and [Cursor](https://docs.agentsentinel.dev/ai-tools/cursor) guides for a full
+walkthrough. `agent_sentinel.mcp` remains the client for the legacy
+REST facade.
+
 ## 🐛 Troubleshooting
 
 ### Logs not appearing?
@@ -764,5 +925,5 @@ See the main repository README for contribution guidelines.
 
 - Issues: [GitHub Issues](https://github.com/agent-sentinel/agent-sentinel/issues)
 - Email: hello@agentsentinel.dev
-- Docs: https://docs.agentsentinel.dev (coming soon)
+- Docs: https://docs.agentsentinel.dev
 

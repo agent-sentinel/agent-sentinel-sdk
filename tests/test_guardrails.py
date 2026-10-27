@@ -215,8 +215,13 @@ class TestIdempotencyCache:
 @pytest.fixture(autouse=True)
 def _reset_policy_engine():
     PolicyEngine.reset()
+    # reset() now defaults to "fail_closed_writes"; this suite was written
+    # against the pre-0.4 fail-open-when-unconfigured assumption (see
+    # conftest.py's docstring for why this is assigned directly).
+    PolicyEngine._enforcement_mode = "fail_open"
     yield
     PolicyEngine.reset()
+    PolicyEngine._enforcement_mode = "fail_open"
 
 
 def _configure(cfg: PolicyConfig) -> None:

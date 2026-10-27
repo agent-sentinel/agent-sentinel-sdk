@@ -4,8 +4,11 @@ from .guard import guarded_action
 from .errors import (
     AgentSentinelError,
     AgentKilledError,
+    KillSwitchUnavailableError,
     BudgetExceededError,
     PolicyViolationError,
+    PolicyNotConfiguredError,
+    NoPolicyForWriteError,
     EvidenceViolationError,
     RemediationPayload,
     ReplayDivergenceError,
@@ -24,9 +27,16 @@ from .retry import (
 )
 from .ledger import Ledger
 from .cost import CostTracker
+from .cost_backend import (
+    CostBackend,
+    CostSnapshot,
+    InMemoryCostBackend,
+    FileCostBackend,
+    RemoteCostBackend,
+)
 from .policy import PolicyEngine, PolicyConfig
-from .sync import BackgroundSync, ManualSync, SyncConfig, enable_remote_sync, manual_flush, flush_and_stop
-from ._configure import configure, flush
+from .sync import BackgroundSync, ManualSync, SyncConfig, enable_remote_sync, manual_flush, flush_and_stop, flush
+from ._configure import configure
 from .replay import ReplayMode, ReplayEntry, replay_mode
 from .compliance import (
     # Core classes
@@ -111,13 +121,16 @@ from .guardrails import (
 # Import integrations module to make it accessible
 from . import integrations
 
-__version__ = "0.2.0"
+__version__ = "0.5.0"
 __all__ = [
     "guarded_action",
     "AgentSentinelError",
     "AgentKilledError",
+    "KillSwitchUnavailableError",
     "BudgetExceededError",
     "PolicyViolationError",
+    "PolicyNotConfiguredError",
+    "NoPolicyForWriteError",
     "EvidenceViolationError",
     "RemediationPayload",
     "EvidenceTracker",
@@ -134,6 +147,11 @@ __all__ = [
     "with_circuit_breaker",
     "Ledger",
     "CostTracker",
+    "CostBackend",
+    "CostSnapshot",
+    "InMemoryCostBackend",
+    "FileCostBackend",
+    "RemoteCostBackend",
     "PolicyEngine",
     "PolicyConfig",
     "BackgroundSync",

@@ -322,8 +322,9 @@ export GOOGLE_API_KEY='your-gemini-key'
 export XAI_API_KEY='your-grok-key'
 
 # AgentSentinel Platform (optional)
-export AGENTSENTINEL_API_KEY='your-sentinel-key'
-export AGENTSENTINEL_API_URL='https://api.agentsentinel.dev'
+export AGENT_SENTINEL_API_KEY='your-sentinel-key'
+# Optional: override the hosted platform URL (for self-hosted or staging)
+# export AGENT_SENTINEL_URL='https://sentinel.example.internal'
 ```
 
 ### Remote Sync
@@ -333,10 +334,8 @@ Enable remote sync to the AgentSentinel platform:
 ```python
 from agent_sentinel import enable_remote_sync, flush_and_stop
 
-enable_remote_sync(
-    api_url="https://api.agentsentinel.dev",
-    api_key="your-api-key"
-)
+# Uses the hosted platform and AGENT_SENTINEL_API_KEY by default
+enable_remote_sync(api_token="your-api-key")
 
 # Your code with integrations...
 

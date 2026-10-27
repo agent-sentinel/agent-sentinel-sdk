@@ -22,7 +22,8 @@ import functools
 import inspect
 import time
 import logging
-from typing import Optional, Any, Callable
+from datetime import datetime
+from typing import Optional, Any, Callable, Literal
 
 from .ledger import Ledger
 from .cost import CostTracker
@@ -30,6 +31,7 @@ from .policy import PolicyEngine
 from .context import ExecutionContext
 from .errors import BudgetExceededError, PolicyViolationError, EvidenceViolationError
 from .approval import ApprovalClient
+from .redaction import redact_inputs, ledger_input_capture_enabled
 
 logger = logging.getLogger("agent_sentinel")
 
@@ -49,6 +51,48 @@ class _PlatformApprovalAdapter:
         self.approver_id = platform_resp.decided_by_email
         self.approved_at = platform_resp.decided_at
         self.notes = platform_resp.decision_notes
+
+
+def _reason_code_to_intervention() -> dict:
+    """
+    Map a RemediationPayload reason_code to an InterventionType.
+
+    Built lazily so intervention.py stays imported inside the recording
+    functions rather than becoming a load-time import cycle.
+    """
+    from .intervention import InterventionType
+
+    return {
+        "RATE_LIMITED": InterventionType.RATE_LIMITED,
+        "BUDGET_EXCEEDED": InterventionType.BUDGET_EXCEEDED,
+        "DENIED_ACTION": InterventionType.HARD_BLOCK,
+        "NOT_IN_ALLOWLIST": InterventionType.HARD_BLOCK,
+        "POLICY_NOT_CONFIGURED": InterventionType.HARD_BLOCK,
+        "EVALUATION_ERROR": InterventionType.HARD_BLOCK,
+        "MISSING_EVIDENCE": InterventionType.MISSING_EVIDENCE,
+        "STALE_EVIDENCE": InterventionType.MISSING_EVIDENCE,
+        "ARGUMENT_CONSTRAINT_VIOLATED": InterventionType.MISSING_EVIDENCE,
+        "UNGROUNDED_ARGUMENT": InterventionType.MISSING_EVIDENCE,
+        # Built-in guardrails.
+        "PII_DETECTED": InterventionType.PII_BLOCKED,
+        "CONTENT_MODERATED": InterventionType.CONTENT_BLOCKED,
+        "LOOP_DETECTED": InterventionType.LOOP_DETECTED,
+    }
+
+
+def _reason_code_of(error) -> "str | None":
+    """
+    Read the structured reason code wherever it lives.
+
+    Guardrails put it at details["reason_code"]; policy errors also expose it
+    on .remediation. Checking both keeps one dispatch path for all of them.
+    """
+    remediation = getattr(error, "remediation", None)
+    code = getattr(remediation, "reason_code", None)
+    if code:
+        return code
+    details = getattr(error, "details", None)
+    return details.get("reason_code") if isinstance(details, dict) else None
 
 
 def _record_policy_intervention(
@@ -75,21 +119,48 @@ def _record_policy_intervention(
         }
     else:
         # PolicyViolationError - could be deny list, rate limit, PII/moderation/loop, etc.
-        reason_code = None
-        if isinstance(error, PolicyViolationError) and isinstance(error.details, dict):
-            reason_code = error.details.get("reason_code")
-        if reason_code == "PII_DETECTED":
-            intervention_type = InterventionType.PII_BLOCKED
-        elif reason_code == "CONTENT_MODERATED":
-            intervention_type = InterventionType.CONTENT_BLOCKED
-        elif reason_code == "LOOP_DETECTED":
-            intervention_type = InterventionType.LOOP_DETECTED
-        elif "rate limit" in str(error).lower():
-            intervention_type = InterventionType.RATE_LIMITED
-        else:
-            intervention_type = InterventionType.HARD_BLOCK
+        # Dispatch on the structured reason_code rather than sniffing the
+        # human-readable message: rewording a message must not silently
+        # reclassify every rate-limit block as a hard block.
+        intervention_type = _reason_code_to_intervention().get(
+            _reason_code_of(error), InterventionType.HARD_BLOCK
+        )
         reason = str(error)
         blast_radius = {"funds_protected": cost}
+
+    # Build structured context for guardrail-type-specific UI rendering.
+    # Versioned payload so the console can dispatch to a typed detail panel
+    # instead of rendering generic intervention text.
+    context: Optional[dict[str, Any]] = None
+    if isinstance(error, PolicyViolationError) and isinstance(error.details, dict):
+        details = error.details
+        reason_code = details.get("reason_code")
+        if reason_code == "PII_DETECTED":
+            context = {
+                "guardrail_schema_version": 1,
+                "guardrail": "pii",
+                "matches": details.get("matches", []),
+                "categories": details.get("categories", []),
+                "fields": details.get("fields", []),
+            }
+        elif reason_code == "CONTENT_MODERATED":
+            context = {
+                "guardrail_schema_version": 1,
+                "guardrail": "moderation",
+                "categories": details.get("categories", []),
+                "fields": details.get("fields", []),
+                "results": details.get("results", []),
+            }
+        elif reason_code == "LOOP_DETECTED":
+            detection = details.get("detection", {}) or {}
+            context = {
+                "guardrail_schema_version": 1,
+                "guardrail": "loop",
+                "arg_hash": detection.get("arg_hash"),
+                "occurrences": detection.get("count") or details.get("prior_attempts"),
+                "window_seconds": detection.get("window_seconds"),
+                "break_out_hint": detection.get("break_out_hint") or details.get("retry_guidance"),
+            }
 
     # Get current context for attribution
     ctx = ExecutionContext.current()
@@ -108,6 +179,15 @@ def _record_policy_intervention(
         task_id=ctx.task_id if ctx else None,
         mission_id=ctx.mission_id if ctx else None,
         risk_level="high" if cost > 1.0 else "medium",
+        context=context,
+        # Forward the structured payload so deny-list, allowlist, rate-limit
+        # and budget blocks carry a reason_code and guidance into the platform,
+        # the same way evidence blocks already do.
+        remediation_payload=(
+            error.remediation.to_dict()
+            if getattr(error, "remediation", None) is not None
+            else None
+        ),
     )
 
 
@@ -234,6 +314,8 @@ def _record_idempotency_intervention(
     cost: float,
     args: tuple,
     kwargs: dict,
+    first_seen_at: datetime,
+    ttl_seconds: float,
 ) -> None:
     """Record an intervention when a cached idempotency result is returned."""
     from .intervention import InterventionTracker, InterventionType, InterventionOutcome
@@ -252,6 +334,14 @@ def _record_idempotency_intervention(
         task_id=ctx.task_id if ctx else None,
         mission_id=ctx.mission_id if ctx else None,
         risk_level="low",
+        context={
+            "guardrail_schema_version": 1,
+            "guardrail": "idempotency",
+            "key": key,
+            "first_seen_at": first_seen_at.isoformat(),
+            "ttl_seconds": ttl_seconds,
+            "cost_saved_usd": cost,
+        },
     )
 
 
@@ -273,6 +363,8 @@ def guarded_action(
     risk_level: Optional[str] = None,
     idempotency_key: Optional[Any] = None,
     idempotency_ttl_seconds: Optional[float] = None,
+    fail_closed: Optional[bool] = None,
+    impact: Literal["read", "low", "medium", "high"] = "medium",
 ):
     """
     Decorator to wrap an agent action (tool call, API request) with
@@ -317,7 +409,22 @@ def guarded_action(
         tags: Optional list of tags for categorization
         requires_human_approval: If True, pauses execution and requests human approval (Enterprise)
         approval_description: Human-readable description shown in approval request
-        
+        fail_closed: Per-action enforcement override, forwarded to the kill
+            switch check and PolicyEngine.check_and_reserve(). True forces
+            "fail_closed" for this action; False forces "fail_open"; None
+            (default) defers to PolicyEngine.get_enforcement_mode()
+            (set_enforcement_mode() / AGENT_SENTINEL_ENFORCEMENT / default,
+            which is "fail_closed_writes" as of 0.4.0).
+        impact: Declared impact of this action: "read", "low", "medium"
+            (default), or "high". Sent to the platform in the ledger/ingest
+            entry, and consulted locally by PolicyEngine whenever it cannot
+            vouch for the action (unconfigured, unreachable with no cache,
+            or an evaluation error) under the default "fail_closed_writes"
+            mode: "medium"/"high" block with NoPolicyForWriteError,
+            "read"/"low" proceed with a warning. Declare read-only actions
+            with impact="read" or "low" so they keep working without a
+            policy loaded.
+
     Returns:
         Decorated function that records telemetry to local ledger
     """
@@ -338,6 +445,7 @@ def guarded_action(
                 argument_constraints, evidence_max_age_seconds,
                 grounding_rules, risk_level,
                 idempotency_key, idempotency_ttl_seconds,
+                fail_closed, impact,
                 *args, **kwargs
             )
 
@@ -351,6 +459,7 @@ def guarded_action(
                 argument_constraints, evidence_max_age_seconds,
                 grounding_rules, risk_level,
                 idempotency_key, idempotency_ttl_seconds,
+                fail_closed, impact,
                 *args, **kwargs
             )
 
@@ -367,6 +476,7 @@ def guarded_action(
             "argument_constraints": argument_constraints,
             "evidence_max_age_seconds": evidence_max_age_seconds,
             "grounding_rules": grounding_rules,
+            "impact": impact,
         }
         return wrapper
 
@@ -392,6 +502,8 @@ async def _execute_async(
     risk_level: Optional[str] = None,
     idempotency_key: Optional[Any] = None,
     idempotency_ttl_seconds: Optional[float] = None,
+    fail_closed: Optional[bool] = None,
+    impact: str = "medium",
     *args,
     **kwargs
 ):
@@ -424,7 +536,8 @@ async def _execute_async(
             # Record that we replayed this action
             _safe_log(
                 action_name, args, kwargs, recorded_output, None,
-                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id
+                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id,
+                impact=impact,
             )
             
             return recorded_output
@@ -446,11 +559,19 @@ async def _execute_async(
         try:
             DEFAULT_IDEMPOTENCY_CACHE.lookup(run_id, _idem_key, action_name)
         except IdempotencyHit as hit:
-            _record_idempotency_intervention(action_name, _idem_key, cost, args, kwargs)
+            _record_idempotency_intervention(
+                action_name,
+                _idem_key,
+                cost,
+                args,
+                kwargs,
+                first_seen_at=hit.first_seen_at,
+                ttl_seconds=hit.ttl_seconds,
+            )
             _safe_log(
                 action_name, args, kwargs, hit.value, None,
                 cost, 0.0, "idempotent_replay", tags or [],
-                None, agent_id, task_id, mission_id,
+                None, agent_id, task_id, mission_id, impact=impact,
             )
             return hit.value
 
@@ -472,7 +593,7 @@ async def _execute_async(
         compliance_metadata.approval_status = ApprovalStatus.PENDING
 
         try:
-            approval_response = await HumanApprovalHandler.request_approval_async(
+            approval_response = await HumanApprovalHandler._class_request_approval_async(
                 action_name=action_name,
                 action_description=approval_description,
                 inputs={"args": args, "kwargs": kwargs},
@@ -494,7 +615,7 @@ async def _execute_async(
                     f"Approval {status_str}: {approval_response.notes or approval_response.status}",
                     cost, 0.0, "rejected" if status_str == "rejected" else "blocked", tags,
                     compliance_metadata.to_dict() if compliance_metadata else None,
-                    agent_id, task_id, mission_id,
+                    agent_id, task_id, mission_id, impact=impact,
                 )
                 clear_compliance_metadata()
                 raise PolicyViolationError(
@@ -550,7 +671,7 @@ async def _execute_async(
                 f"Approval {status_str}: {platform_resp.decision_notes or platform_resp.status}",
                 cost, 0.0, outcome, tags,
                 compliance_metadata.to_dict() if compliance_metadata else None,
-                agent_id, task_id, mission_id,
+                agent_id, task_id, mission_id, impact=impact,
             )
             clear_compliance_metadata()
             raise PolicyViolationError(
@@ -560,17 +681,22 @@ async def _execute_async(
     # Set compliance metadata for the action context
     set_compliance_metadata(compliance_metadata)
 
-    # Kill switch check (fail-open: only blocks when kill is confirmed)
+    # Kill switch check (fail-open by default: only blocks when kill is
+    # confirmed; fail_closed also blocks when the check itself cannot be
+    # completed — see KillSwitchClient.is_killed).
     from .kill_switch import KillSwitchClient
     if KillSwitchClient.is_configured():
         KillSwitchClient.check_or_raise(
-            agent_id=agent_id, mission_id=mission_id
+            agent_id=agent_id, run_id=ExecutionContext.get_run_id(), mission_id=mission_id,
+            fail_closed=PolicyEngine.resolve_enforcement_mode(fail_closed) == "fail_closed",
         )
 
     # Phase 2: Check policy BEFORE execution (includes evidence requirements from policy)
     # This may raise BudgetExceededError, PolicyViolationError, or EvidenceViolationError
     try:
-        PolicyEngine.check_action(action_name, cost, kwargs=kwargs)
+        PolicyEngine.check_and_reserve(
+            action_name, cost, kwargs=kwargs, fail_closed=fail_closed, impact=impact
+        )
     except EvidenceViolationError as e:
         logger.warning(f"Evidence requirement blocked action '{action_name}': {e}")
         _record_evidence_intervention(action_name, cost, e, args, kwargs)
@@ -578,7 +704,7 @@ async def _execute_async(
             action_name, args, kwargs, None, str(e),
             cost, 0.0, "blocked", tags,
             compliance_metadata.to_dict() if compliance_metadata else None,
-            agent_id, task_id, mission_id,
+            agent_id, task_id, mission_id, impact=impact,
         )
         clear_compliance_metadata()
         raise
@@ -589,7 +715,7 @@ async def _execute_async(
             action_name, args, kwargs, None, str(e),
             cost, 0.0, "blocked", tags,
             compliance_metadata.to_dict() if compliance_metadata else None,
-            agent_id, task_id, mission_id,
+            agent_id, task_id, mission_id, impact=impact,
         )
         clear_compliance_metadata()
         raise
@@ -611,7 +737,7 @@ async def _execute_async(
                 action_name, args, kwargs, None, str(error),
                 cost, 0.0, "blocked", tags,
                 compliance_metadata.to_dict() if compliance_metadata else None,
-                agent_id, task_id, mission_id,
+                agent_id, task_id, mission_id, impact=impact,
             )
             clear_compliance_metadata()
             raise error
@@ -641,7 +767,7 @@ async def _execute_async(
                 action_name, args, kwargs, None, str(error),
                 cost, 0.0, "blocked", tags,
                 compliance_metadata.to_dict() if compliance_metadata else None,
-                agent_id, task_id, mission_id,
+                agent_id, task_id, mission_id, impact=impact,
             )
             clear_compliance_metadata()
             raise error
@@ -657,13 +783,13 @@ async def _execute_async(
                 argument_violations=violations,
                 retry_guidance="Fix the argument values to satisfy constraints",
             )
-            error.remediation.reason_code = "ARGUMENT_CONSTRAINT_VIOLATION"
+            error.remediation.reason_code = "ARGUMENT_CONSTRAINT_VIOLATED"
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
             _safe_log(
                 action_name, args, kwargs, None, str(error),
                 cost, 0.0, "blocked", tags,
                 compliance_metadata.to_dict() if compliance_metadata else None,
-                agent_id, task_id, mission_id,
+                agent_id, task_id, mission_id, impact=impact,
             )
             clear_compliance_metadata()
             raise error
@@ -699,8 +825,9 @@ async def _execute_async(
         # Always record telemetry and cost, even if function failed
         duration_ms = (time.perf_counter_ns() - start_ns) / 1_000_000
 
-        # Phase 2: Record cost to tracker
-        CostTracker.add_cost(action_name, cost)
+        # Cost was already recorded by check_and_reserve above — reserving is
+        # what makes the budget a real cap, and it records as it reserves.
+        # Adding here too would double-count every spend.
 
         # Record evidence if this action produces it and succeeded
         if produces_evidence and outcome == "success":
@@ -722,6 +849,7 @@ async def _execute_async(
             agent_id,
             task_id,
             mission_id,
+            impact=impact,
         )
 
         # Clear compliance metadata after logging
@@ -747,6 +875,8 @@ def _execute_sync(
     risk_level: Optional[str] = None,
     idempotency_key: Optional[Any] = None,
     idempotency_ttl_seconds: Optional[float] = None,
+    fail_closed: Optional[bool] = None,
+    impact: str = "medium",
     *args,
     **kwargs
 ):
@@ -779,7 +909,8 @@ def _execute_sync(
             # Record that we replayed this action
             _safe_log(
                 action_name, args, kwargs, recorded_output, None,
-                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id
+                cost, 0.0, "replayed", tags or [], None, agent_id, task_id, mission_id,
+                impact=impact,
             )
             
             return recorded_output
@@ -798,11 +929,19 @@ def _execute_sync(
         try:
             DEFAULT_IDEMPOTENCY_CACHE.lookup(run_id, _idem_key, action_name)
         except IdempotencyHit as hit:
-            _record_idempotency_intervention(action_name, _idem_key, cost, args, kwargs)
+            _record_idempotency_intervention(
+                action_name,
+                _idem_key,
+                cost,
+                args,
+                kwargs,
+                first_seen_at=hit.first_seen_at,
+                ttl_seconds=hit.ttl_seconds,
+            )
             _safe_log(
                 action_name, args, kwargs, hit.value, None,
                 cost, 0.0, "idempotent_replay", tags or [],
-                None, agent_id, task_id, mission_id,
+                None, agent_id, task_id, mission_id, impact=impact,
             )
             return hit.value
 
@@ -817,24 +956,29 @@ def _execute_sync(
     compliance_metadata = ComplianceMetadata()
     approval_response = None
 
-    # Kill switch check (fail-open: only blocks when kill is confirmed)
+    # Kill switch check (fail-open by default: only blocks when kill is
+    # confirmed; fail_closed also blocks when the check itself cannot be
+    # completed — see KillSwitchClient.is_killed).
     from .kill_switch import KillSwitchClient
     if KillSwitchClient.is_configured():
         KillSwitchClient.check_or_raise(
-            agent_id=agent_id, mission_id=mission_id
+            agent_id=agent_id, run_id=ExecutionContext.get_run_id(), mission_id=mission_id,
+            fail_closed=PolicyEngine.resolve_enforcement_mode(fail_closed) == "fail_closed",
         )
 
     # Hard blocks FIRST — deny lists, budgets, evidence, constraints, groundedness.
     # These take priority over approval (no point approving a blocked action).
     try:
-        PolicyEngine.check_action(action_name, cost, kwargs=kwargs)
+        PolicyEngine.check_and_reserve(
+            action_name, cost, kwargs=kwargs, fail_closed=fail_closed, impact=impact
+        )
     except EvidenceViolationError as e:
         logger.warning(f"Evidence requirement blocked action '{action_name}': {e}")
         _record_evidence_intervention(action_name, cost, e, args, kwargs)
         _safe_log(
             action_name, args, kwargs, None, str(e),
             cost, 0.0, "blocked", tags or [],
-            None, agent_id, task_id, mission_id,
+            None, agent_id, task_id, mission_id, impact=impact,
         )
         raise
     except (BudgetExceededError, PolicyViolationError) as e:
@@ -843,7 +987,7 @@ def _execute_sync(
         _safe_log(
             action_name, args, kwargs, None, str(e),
             cost, 0.0, "blocked", tags or [],
-            None, agent_id, task_id, mission_id,
+            None, agent_id, task_id, mission_id, impact=impact,
         )
         raise
 
@@ -863,7 +1007,7 @@ def _execute_sync(
             _safe_log(
                 action_name, args, kwargs, None, str(error),
                 cost, 0.0, "blocked", tags or [],
-                None, agent_id, task_id, mission_id,
+                None, agent_id, task_id, mission_id, impact=impact,
             )
             raise error
 
@@ -891,7 +1035,7 @@ def _execute_sync(
             _safe_log(
                 action_name, args, kwargs, None, str(error),
                 cost, 0.0, "blocked", tags or [],
-                None, agent_id, task_id, mission_id,
+                None, agent_id, task_id, mission_id, impact=impact,
             )
             raise error
 
@@ -906,12 +1050,12 @@ def _execute_sync(
                 argument_violations=violations,
                 retry_guidance="Fix the argument values to satisfy constraints",
             )
-            error.remediation.reason_code = "ARGUMENT_CONSTRAINT_VIOLATION"
+            error.remediation.reason_code = "ARGUMENT_CONSTRAINT_VIOLATED"
             _record_evidence_intervention(action_name, cost, error, args, kwargs)
             _safe_log(
                 action_name, args, kwargs, None, str(error),
                 cost, 0.0, "blocked", tags,
-                None, agent_id, task_id, mission_id,
+                None, agent_id, task_id, mission_id, impact=impact,
             )
             raise error
 
@@ -921,7 +1065,7 @@ def _execute_sync(
         compliance_metadata.approval_status = ApprovalStatus.PENDING
 
         try:
-            approval_response = HumanApprovalHandler.request_approval_sync(
+            approval_response = HumanApprovalHandler._class_request_approval_sync(
                 action_name=action_name,
                 action_description=approval_description,
                 inputs={"args": args, "kwargs": kwargs},
@@ -1020,8 +1164,9 @@ def _execute_sync(
         # Always record telemetry and cost, even if function failed
         duration_ms = (time.perf_counter_ns() - start_ns) / 1_000_000
 
-        # Phase 2: Record cost to tracker
-        CostTracker.add_cost(action_name, cost)
+        # Cost was already recorded by check_and_reserve above — reserving is
+        # what makes the budget a real cap, and it records as it reserves.
+        # Adding here too would double-count every spend.
 
         # Record evidence if this action produces it and succeeded
         if produces_evidence and outcome == "success":
@@ -1043,6 +1188,7 @@ def _execute_sync(
             agent_id,
             task_id,
             mission_id,
+            impact=impact,
         )
 
         # Clear compliance metadata after logging
@@ -1064,6 +1210,7 @@ def _safe_log(
     task_id: Optional[str] = None,
     mission_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    impact: str = "medium",
 ):
     """
     Isolate the logging logic to ensure fail-open behavior.
@@ -1078,9 +1225,16 @@ def _safe_log(
             run_id = getattr(ctx, "run_id", None)
 
     try:
+        if ledger_input_capture_enabled():
+            redacted_args, redacted_kwargs, inputs_redacted = redact_inputs(args, kwargs)
+            inputs = {"args": redacted_args, "kwargs": redacted_kwargs}
+        else:
+            inputs = {}
+            inputs_redacted = False
+
         Ledger.record(
             action=action,
-            inputs={"args": args, "kwargs": kwargs},
+            inputs=inputs,
             outputs=result if outcome == "success" else error,
             cost_usd=cost,
             duration_ms=duration,
@@ -1091,6 +1245,8 @@ def _safe_log(
             task_id=task_id,
             mission_id=mission_id,
             run_id=run_id,
+            inputs_redacted=inputs_redacted,
+            impact=impact,
         )
     except Exception as e:
         # FAIL-OPEN: Log to stderr but never crash the agent

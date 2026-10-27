@@ -25,6 +25,7 @@ from .moderation import (
     ModerationRule,
     Moderator,
     KeywordModerator,
+    GeminiModerator,
 )
 from .loop_detector import LoopGuard, LoopRule, LoopDetection
 from .idempotency import IdempotencyCache, IdempotencyHit
@@ -39,6 +40,7 @@ __all__ = [
     "ModerationRule",
     "Moderator",
     "KeywordModerator",
+    "GeminiModerator",
     "LoopGuard",
     "LoopRule",
     "LoopDetection",

@@ -164,10 +164,7 @@ For enterprise features (dashboard, approvals):
 ```python
 from agent_sentinel import enable_remote_sync
 
-enable_remote_sync(
-    platform_url="https://api.agentsentinel.dev",
-    api_token="as_your_token_here",
-)
+enable_remote_sync(api_token="as_your_token_here")  # hosted platform by default
 
 # Everything is now synced to platform
 ```

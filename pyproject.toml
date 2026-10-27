@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentsentinel-sdk"
-version = "0.2.0"
+version = "0.5.0"
 description = "Runtime authority and control for autonomous AI agents"
 readme = "README.md"
 authors = [
@@ -36,6 +36,13 @@ dependencies = [
 # Users can install 'agent-sentinel[remote]' if they want to sync to the platform
 remote = [
     "httpx>=0.28.0",  # Async HTTP client for sending logs to Platform
+]
+
+# agentsentinel-mcp: stdio MCP proxy to the platform's /mcp endpoint (t25).
+# The official MCP library needs Python 3.10+.
+mcp = [
+    "mcp>=1.26,<2; python_version >= '3.10'",
+    "httpx>=0.28.0",
 ]
 
 # Framework integrations (optional - install as needed)
@@ -81,6 +88,10 @@ dev = [
     "mypy>=1.0.0",  # Type checking
     "httpx>=0.24.0",  # Include in dev for testing remote sync
 ]
+
+[project.scripts]
+agentsentinel-mcp = "agent_sentinel.mcp_proxy:main"
+agentsentinel-runtime = "agent_sentinel.runtime.cli:main"
 
 [project.urls]
 "Homepage" = "https://agentsentinel.dev"

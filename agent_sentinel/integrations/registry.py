@@ -69,9 +69,9 @@ def discover_tools(modules: Optional[List[ModuleType]] = None) -> List[Dict[str,
 
 
 def auto_register_tools(
-    platform_url: str,
-    api_token: str,
-    agent_id: str,
+    platform_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    agent_id: Optional[str] = None,
     modules: Optional[List[ModuleType]] = None,
     sdk_version: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -79,15 +79,27 @@ def auto_register_tools(
     Discover and batch-register sentinel tools with the platform.
 
     Args:
-        platform_url: Platform API base URL
-        api_token: JWT or API key for authentication
-        agent_id: Agent identifier
+        platform_url: Platform API base URL. Defaults to the hosted platform;
+            AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL override it.
+        api_token: JWT or API key for authentication. Defaults to
+            AGENT_SENTINEL_API_KEY.
+        agent_id: Agent identifier (required; keyword or third positional)
         modules: Specific modules to scan (default: all imported)
         sdk_version: SDK version string
 
     Returns:
         Registration response from platform
     """
+    from .._defaults import resolve_api_token, resolve_platform_url
+    from ..errors import ConfigurationError
+
+    if not agent_id:
+        raise ConfigurationError(
+            "auto_register_tools() requires agent_id.", config_key="agent_id"
+        )
+    platform_url = resolve_platform_url(platform_url)
+    api_token = resolve_api_token(api_token)
+
     try:
         import httpx
     except ImportError:
@@ -112,7 +124,7 @@ def auto_register_tools(
         "actions": tool_defs,
     }
 
-    url = f"{platform_url.rstrip('/')}/api/v1/actions/register"
+    url = f"{platform_url}/api/v1/actions/register"
     headers = {"Authorization": f"ApiKey {api_token}"}
 
     response = httpx.post(url, json=payload, headers=headers, timeout=10.0)

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextvars
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,8 @@ class _ContextData:
     run_id: Optional[str] = None
     task_id: Optional[str] = None
     mission_id: Optional[str] = None
+    harness: Optional[str] = None
+    principal: Optional[str] = None
 
 
 _current_context: contextvars.ContextVar[Optional[_ContextData]] = contextvars.ContextVar(
@@ -61,12 +63,16 @@ class ExecutionContext:
         run_id: Optional[str] = None,
         task_id: Optional[str] = None,
         mission_id: Optional[str] = None,
+        harness: Optional[str] = None,
+        principal: Optional[str] = None,
     ):
         self._data = _ContextData(
             agent_id=agent_id,
             run_id=run_id,
             task_id=task_id,
             mission_id=mission_id,
+            harness=harness,
+            principal=principal,
         )
         self._token: Optional[contextvars.Token] = None
 
@@ -119,3 +125,59 @@ class ExecutionContext:
         """Return the current mission_id, or None."""
         ctx = _current_context.get()
         return ctx.mission_id if ctx else None
+
+    @staticmethod
+    def get_harness() -> Optional[str]:
+        """Return the current harness, or None."""
+        ctx = _current_context.get()
+        return ctx.harness if ctx else None
+
+    @staticmethod
+    def get_principal() -> Optional[str]:
+        """Return the current principal, or None."""
+        ctx = _current_context.get()
+        return ctx.principal if ctx else None
+
+
+def build_identity_headers(
+    api_token: str,
+    agent_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Build the standard auth + identity headers sent with every platform request.
+
+    Every SDK HTTP call authenticates the same way (``Authorization: Bearer
+    <api_token>``) and identifies its caller via ``X-Sentinel-*`` headers so
+    the platform can bind identity to the key instead of trusting body
+    strings. ``agent_id``/``run_id`` arguments let a caller override the
+    current ``ExecutionContext`` (e.g. a sync batch grouped under a specific
+    run); ``harness``/``principal`` always come from the context, since no
+    call site threads them through explicitly. Headers with no resolved
+    value are omitted rather than sent empty.
+
+    Note: imports ``__version__`` lazily -- ``agent_sentinel/__init__.py``
+    imports this module before it finishes defining ``__version__``, so a
+    top-level import here would be circular.
+    """
+    from . import __version__
+
+    ctx = ExecutionContext.current()
+    resolved_agent_id = agent_id or (ctx.agent_id if ctx else None)
+    resolved_run_id = run_id or (ctx.run_id if ctx else None)
+    harness = ctx.harness if ctx else None
+    principal = ctx.principal if ctx else None
+
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "User-Agent": f"agentsentinel-sdk/{__version__}",
+    }
+    if resolved_agent_id:
+        headers["X-Sentinel-Agent-Id"] = resolved_agent_id
+    if resolved_run_id:
+        headers["X-Sentinel-Run-Id"] = resolved_run_id
+    if harness:
+        headers["X-Sentinel-Harness"] = harness
+    if principal:
+        headers["X-Sentinel-Principal"] = principal
+    return headers

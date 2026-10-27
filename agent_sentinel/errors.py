@@ -68,43 +68,295 @@ class BudgetExceededError(AgentSentinelError):
         self.budget_type = budget_type
         details = details or {}
         details.update({"spent": spent, "limit": limit, "budget_type": budget_type})
+
+        # Format defensively: a None or non-numeric limit must not raise from
+        # inside an exception constructor and mask the original budget error.
+        try:
+            amounts = (
+                f"The {budget_type} budget of ${float(limit):.4f} USD is "
+                f"exhausted (${float(spent):.4f} would be spent). "
+            )
+        except (TypeError, ValueError):
+            amounts = f"The {budget_type} budget is exhausted. "
+
+        self.remediation = RemediationPayload(
+            reason_code="BUDGET_EXCEEDED",
+            retry_guidance=amounts + _default_retry_guidance("BUDGET_EXCEEDED"),
+        )
+        details["remediation"] = self.remediation.to_dict()
+
         super().__init__(
             message=message,
             error_code="BUDGET_EXCEEDED",
             details=details,
-            recoverable=False,  # Budget violations don't recover
+            # Waiting or retrying does not refill a budget. The agent has to
+            # change approach or stop.
+            recoverable=False,
         )
 
 
 class PolicyViolationError(AgentSentinelError):
-    """Raised when an action violates a specific policy rule."""
-    
+    """
+    Raised when an action violates a specific policy rule.
+
+    Carries a RemediationPayload so a blocked agent receives guidance rather
+    than a bare error string. Without it the agent sees only "denied" and
+    typically retries the identical call, which cannot succeed. The payload
+    names what to do instead: permitted alternatives for an allowlist miss, a
+    wait time for a rate limit, a plain statement that a denied action will
+    never succeed.
+    """
+
     def __init__(
         self,
         message: str,
         policy_rule: Optional[str] = None,
         action_name: Optional[str] = None,
         details: Optional[dict[str, Any]] = None,
+        reason_code: str = "POLICY_VIOLATION",
+        retry_guidance: Optional[str] = None,
+        safe_alternatives: Optional[list[str]] = None,
+        retry_after_seconds: Optional[float] = None,
+        recoverable: bool = False,
+        error_code: str = "POLICY_VIOLATION",
     ):
         """
         Initialize policy violation error.
-        
+
         Args:
             message: Human-readable error message
             policy_rule: Name of the violated policy rule
             action_name: Name of the action that violated policy
             details: Additional error context
+            reason_code: Machine-readable cause, e.g. DENIED_ACTION,
+                NOT_IN_ALLOWLIST, RATE_LIMITED
+            retry_guidance: What the agent should do next. Auto-generated from
+                reason_code when omitted.
+            safe_alternatives: Actions the agent may call instead
+            retry_after_seconds: For time-bounded blocks, when to try again
+            recoverable: Whether retrying can ever succeed. True for rate
+                limits (waiting works), False for deny lists (nothing works).
         """
         details = details or {}
         if policy_rule:
             details["policy_rule"] = policy_rule
         if action_name:
             details["action_name"] = action_name
-        super().__init__(
+
+        # The built-in guardrails (PII, moderation, loop) construct this error
+        # with details={"reason_code": ...} rather than the kwarg. Honour that
+        # so remediation.reason_code and details["reason_code"] cannot disagree.
+        if reason_code == "POLICY_VIOLATION" and details.get("reason_code"):
+            reason_code = details["reason_code"]
+        details.setdefault("reason_code", reason_code)
+
+        if not retry_guidance:
+            retry_guidance = _default_retry_guidance(
+                reason_code=reason_code,
+                action_name=action_name,
+                safe_alternatives=safe_alternatives,
+                retry_after_seconds=retry_after_seconds,
+            )
+
+        self.remediation = RemediationPayload(
+            reason_code=reason_code,
+            retry_guidance=retry_guidance,
+            safe_alternatives=safe_alternatives or [],
+            retry_after_seconds=retry_after_seconds,
+        )
+        details["remediation"] = self.remediation.to_dict()
+
+        AgentSentinelError.__init__(
+            self,
             message=message,
-            error_code="POLICY_VIOLATION",
+            error_code=error_code,
             details=details,
+            recoverable=recoverable,
+        )
+
+
+def _default_retry_guidance(
+    reason_code: str,
+    action_name: Optional[str] = None,
+    safe_alternatives: Optional[list[str]] = None,
+    retry_after_seconds: Optional[float] = None,
+) -> str:
+    """
+    Build agent-readable guidance for a block that has none supplied.
+
+    Kept deliberately concrete: the text is fed back to a model as a tool
+    result, so it must say what to do, not merely restate what happened.
+    """
+    name = f"'{action_name}'" if action_name else "This action"
+
+    if reason_code == "DENIED_ACTION":
+        text = (
+            f"{name} is on the deny list and will never be permitted. "
+            "Do not retry it. Accomplish the task another way, or report to "
+            "the user that it is blocked by policy."
+        )
+    elif reason_code == "NOT_IN_ALLOWLIST":
+        text = (
+            f"{name} is not on the allowlist. Retrying it will not help. "
+            "Use one of the permitted actions instead."
+        )
+    elif reason_code == "RATE_LIMITED":
+        text = (
+            f"{name} exceeded its rate limit. The same call will succeed "
+            "later; wait before retrying, or do other useful work first."
+        )
+        if retry_after_seconds is not None:
+            text += f" Retry after about {retry_after_seconds:.0f} seconds."
+    elif reason_code == "BUDGET_EXCEEDED":
+        text = (
+            "The budget for this scope is exhausted. Retrying the same call "
+            "will fail again. Use a cheaper approach, or stop and report the "
+            "budget limit to the user."
+        )
+    elif reason_code == "POLICY_NOT_CONFIGURED":
+        text = (
+            "No policy is loaded and enforcement is fail-closed, so every "
+            "action is blocked. This is an operator configuration problem, "
+            "not something to retry."
+        )
+    elif reason_code == "NO_POLICY_FOR_WRITE":
+        text = (
+            f"{name} declares impact 'medium' or 'high' and no policy could "
+            "be evaluated for it (unconfigured, unreachable with no cache, "
+            "or a policy evaluation error), so it was blocked under the "
+            "default 'fail_closed_writes' enforcement mode. This is an "
+            "operator configuration problem, not something to retry as-is: "
+            "if this action does not write anything, ask the operator to "
+            "declare it with impact=\"read\" or impact=\"low\" instead."
+        )
+    elif reason_code == "EVALUATION_ERROR":
+        text = (
+            "Policy evaluation itself raised an unexpected error and "
+            "enforcement is fail-closed, so the action was blocked. This is "
+            "an operator/policy configuration bug, not something to retry."
+        )
+    else:
+        text = (
+            f"{name} was blocked by policy. Retrying the identical call is "
+            "unlikely to succeed; try a different approach."
+        )
+
+    if safe_alternatives:
+        text += f" Permitted alternatives: {', '.join(safe_alternatives)}."
+
+    return text
+
+
+class PolicyNotConfiguredError(PolicyViolationError):
+    """
+    Raised when an action is checked but no policy is loaded, under
+    fail-closed enforcement.
+
+    Subclasses PolicyViolationError deliberately: the action was refused by
+    the policy layer, so every existing ``except (BudgetExceededError,
+    PolicyViolationError)`` handler in guard.py, langchain.py and crewai.py
+    catches it. Making it a sibling of PolicyViolationError instead meant a
+    fail-closed block recorded no intervention, wrote no ledger row, and never
+    cleared compliance metadata — the worst possible gap in the one mode a
+    regulated deployment turns on.
+
+    Raised under the strict ``"fail_closed"`` mode, which blocks every action
+    while unconfigured regardless of declared impact. As of 0.4.0 the SDK's
+    actual default is the softer ``"fail_closed_writes"`` (see
+    ``NoPolicyForWriteError``): a telemetry or config problem still blocks
+    writes, but does not break a caller's read-only tools. ``"fail_closed"``
+    remains available for deployments that want every unconfigured action
+    blocked, not just writes: opt in with
+    ``PolicyEngine.set_enforcement_mode("fail_closed")`` or
+    ``AGENT_SENTINEL_ENFORCEMENT=fail_closed``.
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "Policy engine is not configured and enforcement mode is "
+            "'fail_closed', so the action was blocked. Load a policy "
+            "(PolicyEngine.configure / load_from_yaml / enable_remote_sync), "
+            "or set enforcement mode to 'fail_open' to permit unpoliced actions."
+        ),
+        action_name: Optional[str] = None,
+        details: Optional[dict[str, Any]] = None,
+    ):
+        details = details or {}
+        details["enforcement_mode"] = "fail_closed"
+        PolicyViolationError.__init__(
+            self,
+            message=message,
+            policy_rule="enforcement_mode",
+            action_name=action_name,
+            details=details,
+            reason_code="POLICY_NOT_CONFIGURED",
+            # Not recoverable by the agent: no prompt-level retry fixes a
+            # missing policy. It is an operator problem.
             recoverable=False,
+            error_code="POLICY_NOT_CONFIGURED",
+        )
+
+
+class NoPolicyForWriteError(PolicyViolationError):
+    """
+    Raised when a write-impact action (``guarded_action(impact=...)`` of
+    ``"medium"`` or ``"high"``, the decorator's own default) is checked while
+    the policy layer cannot vouch for it -- the engine is unconfigured, a
+    remote sync has never produced a usable local cache, or policy
+    evaluation itself raised -- under the default ``"fail_closed_writes"``
+    enforcement mode.
+
+    Subclasses PolicyViolationError for the same reason PolicyNotConfiguredError
+    does: every existing ``except (BudgetExceededError, PolicyViolationError)``
+    handler in guard.py must catch it, record an intervention, and clear
+    compliance metadata. Missing that would be the worst possible gap in the
+    SDK's own default mode.
+
+    ``"fail_closed_writes"`` became the SDK default in 0.4.0: an unconfigured
+    or unreachable engine now blocks declared-impact ``"medium"``/``"high"``
+    actions while still permitting ``"read"``/``"low"`` ones with a warning,
+    so read-only tools keep working without a policy. Set
+    ``AGENT_SENTINEL_ENFORCEMENT=fail_open`` to restore the pre-0.4 behaviour
+    for one more minor version, or ``"fail_closed"`` to block every action
+    regardless of declared impact.
+    """
+
+    def __init__(
+        self,
+        message: Optional[str] = None,
+        action_name: Optional[str] = None,
+        impact: Optional[str] = None,
+        details: Optional[dict[str, Any]] = None,
+    ):
+        details = details or {}
+        details["enforcement_mode"] = "fail_closed_writes"
+        if impact:
+            details["impact"] = impact
+
+        if message is None:
+            name = f"'{action_name}'" if action_name else "This action"
+            message = (
+                f"{name} declares impact={impact or 'medium'!r} and no policy "
+                "could be evaluated for it, so it was blocked under the "
+                "default 'fail_closed_writes' enforcement mode. Load a "
+                "policy, declare impact=\"read\" or \"low\" if this action "
+                "does not write anything, or set enforcement mode to "
+                "'fail_open' to permit it."
+            )
+
+        PolicyViolationError.__init__(
+            self,
+            message=message,
+            policy_rule="enforcement_mode",
+            action_name=action_name,
+            details=details,
+            reason_code="NO_POLICY_FOR_WRITE",
+            # Not recoverable by the agent: no prompt-level retry fixes a
+            # missing policy. It is an operator problem, same as
+            # PolicyNotConfiguredError.
+            recoverable=False,
+            error_code="NO_POLICY_FOR_WRITE",
         )
 
 
@@ -119,7 +371,7 @@ class RemediationPayload:
     __slots__ = (
         "reason_code", "missing_requirements", "required_prior_actions",
         "retry_guidance", "safe_alternatives", "stale_evidence",
-        "argument_violations",
+        "argument_violations", "retry_after_seconds",
     )
 
     def __init__(
@@ -131,6 +383,7 @@ class RemediationPayload:
         safe_alternatives: Optional[list[str]] = None,
         stale_evidence: Optional[list[str]] = None,
         argument_violations: Optional[list[str]] = None,
+        retry_after_seconds: Optional[float] = None,
     ):
         self.reason_code = reason_code
         self.missing_requirements = missing_requirements or []
@@ -139,10 +392,13 @@ class RemediationPayload:
         self.safe_alternatives = safe_alternatives or []
         self.stale_evidence = stale_evidence or []
         self.argument_violations = argument_violations or []
+        # Only meaningful for time-bounded blocks such as rate limits, where
+        # the same call succeeds later without any change by the agent.
+        self.retry_after_seconds = retry_after_seconds
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return {
+        payload: dict[str, Any] = {
             "reason_code": self.reason_code,
             "missing_requirements": self.missing_requirements,
             "required_prior_actions": self.required_prior_actions,
@@ -151,6 +407,12 @@ class RemediationPayload:
             "stale_evidence": self.stale_evidence,
             "argument_violations": self.argument_violations,
         }
+        # Only emitted for time-bounded blocks. Omitting it when unset keeps
+        # the payload byte-identical to prior releases for the evidence path,
+        # so persisted rows and strict consumer schemas do not change shape.
+        if self.retry_after_seconds is not None:
+            payload["retry_after_seconds"] = self.retry_after_seconds
+        return payload
 
 
 class EvidenceViolationError(PolicyViolationError):
@@ -372,6 +634,38 @@ class AgentKilledError(AgentSentinelError):
             error_code="AGENT_KILLED",
             details=details,
             recoverable=False,
+        )
+
+
+class KillSwitchUnavailableError(AgentKilledError):
+    """
+    Raised when the kill switch cannot be checked (platform unreachable, a
+    non-200 response, or httpx not installed) under fail-closed enforcement.
+
+    Subclasses AgentKilledError deliberately: every existing
+    ``except AgentKilledError`` handler catches it. Under fail-closed, an
+    agent that cannot be confirmed as NOT killed is treated the same as one
+    confirmed killed — the caller cannot tell the difference between "not
+    killed" and "don't know", and only one of those is safe to proceed on.
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "Kill switch could not be checked and enforcement mode is "
+            "'fail_closed', so the action was blocked."
+        ),
+        target_type: Optional[str] = None,
+        target_id: Optional[str] = None,
+        details: Optional[dict[str, Any]] = None,
+    ):
+        details = details or {}
+        details["reason_code"] = "KILL_SWITCH_UNAVAILABLE"
+        super().__init__(
+            message=message,
+            target_type=target_type,
+            target_id=target_id,
+            details=details,
         )
 
 

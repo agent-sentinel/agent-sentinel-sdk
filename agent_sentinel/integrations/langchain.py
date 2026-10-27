@@ -78,6 +78,19 @@ except ImportError:
 logger = logging.getLogger("agent_sentinel.integrations.langchain")
 
 
+def _remediation_payload_of(error) -> dict | None:
+    """
+    Structured guidance for a blocked action, or None if the error carries none.
+
+    Mirrors guard.py so a deny-list, allowlist, rate-limit or budget block
+    raised through this integration reaches the platform with a reason_code
+    instead of a blank reason.
+    """
+    remediation = getattr(error, "remediation", None)
+    return remediation.to_dict() if remediation is not None else None
+
+
+
 class SentinelCallbackHandler(BaseCallbackHandler):
     """
     Active Sentinel Handler for LangChain.
@@ -196,10 +209,10 @@ class SentinelCallbackHandler(BaseCallbackHandler):
                 remediation_payload = e.remediation.to_dict()
             elif isinstance(e, BudgetExceededError):
                 intervention_type = InterventionType.BUDGET_EXCEEDED
-                remediation_payload = None
+                remediation_payload = _remediation_payload_of(e)
             else:
                 intervention_type = InterventionType.HARD_BLOCK
-                remediation_payload = None
+                remediation_payload = _remediation_payload_of(e)
 
             InterventionTracker.record(
                 intervention_type=intervention_type,

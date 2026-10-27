@@ -133,7 +133,7 @@ class ReplayMode:
     @classmethod
     def from_ledger_file(
         cls,
-        ledger_path: Path,
+        ledger_path: "Path | str",
         strict: bool = True,
         warn_on_divergence: bool = True,
     ) -> "ReplayMode":
@@ -154,6 +154,11 @@ class ReplayMode:
             FileNotFoundError: If ledger file doesn't exist
             ValueError: If no entries found in ledger
         """
+        # Accept a str as well as a Path. `replay_mode(ledger_path="...")` is
+        # the obvious thing to reach for and previously died on
+        # AttributeError: 'str' object has no attribute 'exists'.
+        ledger_path = Path(ledger_path)
+
         if not ledger_path.exists():
             raise FileNotFoundError(f"Ledger file not found: {ledger_path}")
         
@@ -441,6 +446,78 @@ class ReplayMode:
         except Exception as e:
             logger.debug(f"Could not report replay results: {e}")
     
+    @classmethod
+    def from_json(
+        cls,
+        data: Dict[str, Any],
+        strict: bool = True,
+        warn_on_divergence: bool = True,
+    ) -> "ReplayMode":
+        """
+        Create a ReplayMode from a JSON bundle downloaded from the console.
+
+        The bundle format matches what GET /api/v1/replay/{run_id}/bundle returns:
+        {
+            "run_id": "...",
+            "agent_id": "...",
+            "entries": [
+                {
+                    "id": "...",
+                    "action": "...",
+                    "inputs": {...},
+                    "outputs": {...},
+                    "cost_usd": 0.0,
+                    "duration_ms": 0.0,
+                    "outcome": "...",
+                    "timestamp": "...",
+                    "tags": [...],
+                    "run_id": "...",
+                },
+                ...
+            ]
+        }
+
+        Args:
+            data: Parsed JSON bundle dict (as returned by the platform bundle endpoint)
+            strict: If True, raise ReplayDivergenceError on input mismatch
+            warn_on_divergence: If True, log warnings when inputs don't match
+
+        Returns:
+            ReplayMode instance ready for use as a context manager
+
+        Raises:
+            ValueError: If ``data`` has no "entries" key or entries list is empty
+        """
+        raw_entries = data.get("entries")
+        if not raw_entries:
+            raise ValueError(
+                "Bundle must contain a non-empty 'entries' list. "
+                "Got: entries=" + repr(raw_entries)
+            )
+
+        run_id = data.get("run_id")
+        entries: List[ReplayEntry] = []
+        for item in raw_entries:
+            entry = ReplayEntry(
+                id=item.get("id", ""),
+                action=item.get("action", ""),
+                inputs=item.get("inputs") or {},
+                outputs=item.get("outputs"),
+                cost_usd=float(item.get("cost_usd") or 0.0),
+                duration_ms=float(item.get("duration_ms") or 0.0),
+                outcome=item.get("outcome", ""),
+                timestamp=item.get("timestamp", ""),
+                tags=item.get("tags") or [],
+                run_id=item.get("run_id", run_id),
+            )
+            entries.append(entry)
+
+        logger.info(
+            f"Loaded {len(entries)} entries for replay from JSON bundle (run_id={run_id})"
+        )
+
+        return cls(entries, strict=strict, warn_on_divergence=warn_on_divergence)
+
     @classmethod
     def is_active(cls) -> bool:
         """Check if replay mode is currently active."""

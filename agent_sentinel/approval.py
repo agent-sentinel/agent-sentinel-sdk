@@ -9,6 +9,7 @@ This module provides the client-side implementation for the Approval Inbox featu
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import threading
@@ -17,7 +18,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+from .context import build_identity_headers
 from .errors import PolicyViolationError, TimeoutError, NetworkError, ConfigurationError
+from ._defaults import resolve_api_token, resolve_platform_url
 
 logger = logging.getLogger("agent_sentinel.approval")
 
@@ -124,12 +127,22 @@ class ApprovalResponse:
 
 @dataclass
 class ApprovalConfig:
-    """Configuration for the approval client."""
-    platform_url: str
-    api_token: str
+    """Configuration for the approval client.
+
+    ``platform_url`` defaults to the hosted platform (overridable with
+    AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL) and ``api_token`` to
+    AGENT_SENTINEL_API_KEY.
+    """
+    platform_url: Optional[str] = None
+    api_token: Optional[str] = None
     poll_interval: float = 5.0  # Seconds between polls
     default_timeout: int = 3600  # Default timeout in seconds
     enabled: bool = True
+    info_request_handler: Optional[Any] = None  # Callable[[str], Optional[str]] or async version
+
+    def __post_init__(self) -> None:
+        self.platform_url = resolve_platform_url(self.platform_url)
+        self.api_token = resolve_api_token(self.api_token)
 
 
 class ApprovalClient:
@@ -138,10 +151,7 @@ class ApprovalClient:
     
     Usage:
         # Configure the client
-        ApprovalClient.configure(
-            platform_url="https://api.agentsentinel.dev",
-            api_token="your-jwt-token",
-        )
+        ApprovalClient.configure(api_token="your-api-key")
         
         # Submit an approval request and wait for result
         response = ApprovalClient.request_approval_sync(
@@ -165,31 +175,38 @@ class ApprovalClient:
     @classmethod
     def configure(
         cls,
-        platform_url: str,
-        api_token: str,
+        platform_url: Optional[str] = None,
+        api_token: Optional[str] = None,
         poll_interval: float = 5.0,
         default_timeout: int = 3600,
         enabled: bool = True,
+        info_request_handler: Optional[Any] = None,
     ) -> None:
         """
         Configure the approval client.
-        
+
         Args:
-            platform_url: Platform API base URL
-            api_token: JWT token for authentication
+            platform_url: Platform API base URL. Defaults to the hosted
+                platform; AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL
+                override it.
+            api_token: JWT token or API key. Defaults to AGENT_SENTINEL_API_KEY.
             poll_interval: Seconds between status polls
             default_timeout: Default timeout for approval requests
             enabled: Enable/disable approval workflows
+            info_request_handler: Optional callable (sync or async) that receives the
+                info-request question string and returns an answer string, or None to
+                skip responding. Signature: (message: str) -> Optional[str]
         """
         with cls._lock:
             cls._config = ApprovalConfig(
-                platform_url=platform_url.rstrip("/"),
+                platform_url=platform_url,
                 api_token=api_token,
                 poll_interval=poll_interval,
                 default_timeout=default_timeout,
                 enabled=enabled,
+                info_request_handler=info_request_handler,
             )
-        logger.info(f"Approval client configured for {platform_url}")
+        logger.info(f"Approval client configured for {cls._config.platform_url}")
     
     @classmethod
     def is_configured(cls) -> bool:
@@ -220,9 +237,9 @@ class ApprovalClient:
             return None
         
         url = f"{cls._config.platform_url}/api/v1/approvals/check"
-        headers = {
-            "Authorization": f"ApiKey {cls._config.api_token}",
-        }
+        headers = build_identity_headers(
+            cls._config.api_token, agent_id=agent_id, run_id=run_id
+        )
         params = {
             "action_name": action_name,
             "cost_usd": cost_usd,
@@ -275,10 +292,12 @@ class ApprovalClient:
             )
         
         url = f"{cls._config.platform_url}/api/v1/approvals"
-        headers = {
-            "Authorization": f"ApiKey {cls._config.api_token}",
-            "Content-Type": "application/json",
-        }
+        headers = build_identity_headers(
+            cls._config.api_token,
+            agent_id=request.agent_id,
+            run_id=request.run_id,
+        )
+        headers["Content-Type"] = "application/json"
         
         try:
             with httpx.Client(timeout=10.0) as client:
@@ -336,9 +355,7 @@ class ApprovalClient:
             raise ConfigurationError("httpx not installed")
         
         url = f"{cls._config.platform_url}/api/v1/approvals/{approval_id}/poll"
-        headers = {
-            "Authorization": f"ApiKey {cls._config.api_token}",
-        }
+        headers = build_identity_headers(cls._config.api_token)
         
         try:
             with httpx.Client(timeout=10.0) as client:
@@ -385,10 +402,8 @@ class ApprovalClient:
             raise ConfigurationError("httpx not installed")
         
         url = f"{cls._config.platform_url}/api/v1/approvals/{approval_id}/cancel"
-        headers = {
-            "Authorization": f"ApiKey {cls._config.api_token}",
-            "Content-Type": "application/json",
-        }
+        headers = build_identity_headers(cls._config.api_token)
+        headers["Content-Type"] = "application/json"
         
         try:
             with httpx.Client(timeout=10.0) as client:
@@ -434,10 +449,8 @@ class ApprovalClient:
             raise ConfigurationError("httpx not installed")
         
         url = f"{cls._config.platform_url}/api/v1/approvals/{approval_id}/respond"
-        headers = {
-            "Authorization": f"ApiKey {cls._config.api_token}",
-            "Content-Type": "application/json",
-        }
+        headers = build_identity_headers(cls._config.api_token)
+        headers["Content-Type"] = "application/json"
         
         try:
             with httpx.Client(timeout=10.0) as client:
@@ -526,7 +539,8 @@ class ApprovalClient:
         # Poll until decision
         start_time = time.time()
         poll_interval = cls._config.poll_interval if cls._config else 5.0
-        
+        _info_response_sent = False
+
         while True:
             elapsed = time.time() - start_time
             if elapsed > timeout:
@@ -538,21 +552,48 @@ class ApprovalClient:
                 raise TimeoutError(
                     f"Approval request timed out after {timeout} seconds"
                 )
-            
+
             response = cls.poll_status(approval_id)
-            
+            if response.status != ApprovalStatus.INFO_REQUESTED:
+                _info_response_sent = False
+
             if response.status == ApprovalStatus.PENDING:
                 # Still waiting - continue polling
                 time.sleep(poll_interval)
                 continue
-            
+
             elif response.status == ApprovalStatus.INFO_REQUESTED:
                 # Info requested - agent operator needs to respond
+                message = response.info_request_message or ""
                 logger.warning(
-                    f"Approval {approval_id} needs more info: "
-                    f"{response.info_request_message}"
+                    f"Approval {approval_id} needs more info: {message}"
                 )
-                # Continue polling - operator might respond externally
+                handler = cls._config.info_request_handler if cls._config else None
+                if handler is not None and not _info_response_sent:
+                    try:
+                        import inspect
+                        if inspect.iscoroutinefunction(handler):
+                            try:
+                                running_loop = asyncio.get_running_loop()
+                            except RuntimeError:
+                                running_loop = None
+                            if running_loop is not None and running_loop.is_running():
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _executor:
+                                    answer = _executor.submit(asyncio.run, handler(message)).result()
+                            else:
+                                answer = asyncio.run(handler(message))
+                        else:
+                            answer = handler(message)
+                    except Exception as exc:
+                        logger.error(f"Info request handler raised: {exc}")
+                        answer = None
+                    if answer is not None:
+                        try:
+                            cls.respond_to_info_request(approval_id, answer)
+                            _info_response_sent = True
+                        except Exception as exc:
+                            logger.error(f"Failed to respond to info request: {exc}")
                 time.sleep(poll_interval)
                 continue
             
@@ -598,8 +639,6 @@ class ApprovalClient:
 
         Same as request_approval_sync but uses async/await.
         """
-        import asyncio
-
         timeout = timeout_seconds or cls._config.default_timeout if cls._config else 3600
 
         request = ApprovalRequest(
@@ -624,7 +663,8 @@ class ApprovalClient:
         # Poll until decision
         start_time = time.time()
         poll_interval = cls._config.poll_interval if cls._config else 5.0
-        
+        _info_response_sent = False
+
         while True:
             elapsed = time.time() - start_time
             if elapsed > timeout:
@@ -635,18 +675,39 @@ class ApprovalClient:
                 raise TimeoutError(
                     f"Approval request timed out after {timeout} seconds"
                 )
-            
+
             response = await loop.run_in_executor(None, cls.poll_status, approval_id)
-            
+            if response.status != ApprovalStatus.INFO_REQUESTED:
+                _info_response_sent = False
+
             if response.status == ApprovalStatus.PENDING:
                 await asyncio.sleep(poll_interval)
                 continue
             
             elif response.status == ApprovalStatus.INFO_REQUESTED:
+                message = response.info_request_message or ""
                 logger.warning(
-                    f"Approval {approval_id} needs more info: "
-                    f"{response.info_request_message}"
+                    f"Approval {approval_id} needs more info: {message}"
                 )
+                handler = cls._config.info_request_handler if cls._config else None
+                if handler is not None and not _info_response_sent:
+                    try:
+                        import inspect
+                        if inspect.iscoroutinefunction(handler):
+                            answer = await handler(message)
+                        else:
+                            answer = await loop.run_in_executor(None, handler, message)
+                    except Exception as exc:
+                        logger.error(f"Info request handler raised: {exc}")
+                        answer = None
+                    if answer is not None:
+                        try:
+                            await loop.run_in_executor(
+                                None, cls.respond_to_info_request, approval_id, answer
+                            )
+                            _info_response_sent = True
+                        except Exception as exc:
+                            logger.error(f"Failed to respond to info request: {exc}")
                 await asyncio.sleep(poll_interval)
                 continue
             

@@ -14,7 +14,9 @@ import threading
 from typing import Optional, Dict
 from dataclasses import dataclass
 
-from .errors import AgentKilledError
+from .context import build_identity_headers
+from .errors import AgentKilledError, KillSwitchUnavailableError
+from ._defaults import resolve_api_token, resolve_platform_url
 
 logger = logging.getLogger("agent_sentinel")
 
@@ -27,11 +29,20 @@ except ImportError:
 
 @dataclass
 class KillSwitchConfig:
-    """Configuration for the kill switch client."""
-    platform_url: str
-    api_token: str
+    """Configuration for the kill switch client.
+
+    ``platform_url`` defaults to the hosted platform (overridable with
+    AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL) and ``api_token`` to
+    AGENT_SENTINEL_API_KEY.
+    """
+    platform_url: Optional[str] = None
+    api_token: Optional[str] = None
     cache_ttl: float = 5.0  # seconds to cache kill switch state
     enabled: bool = True
+
+    def __post_init__(self) -> None:
+        self.platform_url = resolve_platform_url(self.platform_url)
+        self.api_token = resolve_api_token(self.api_token)
 
 
 class KillSwitchClient:
@@ -43,10 +54,7 @@ class KillSwitchClient:
 
     Usage::
 
-        KillSwitchClient.configure(
-            platform_url="https://api.agentsentinel.dev",
-            api_token="your-api-key",
-        )
+        KillSwitchClient.configure(api_token="your-api-key")
 
         # Check manually
         if KillSwitchClient.is_killed("agent", "writer-1"):
@@ -63,21 +71,26 @@ class KillSwitchClient:
     @classmethod
     def configure(
         cls,
-        platform_url: str,
-        api_token: str,
+        platform_url: Optional[str] = None,
+        api_token: Optional[str] = None,
         cache_ttl: float = 5.0,
         enabled: bool = True,
     ) -> None:
-        """Configure the kill switch client."""
+        """Configure the kill switch client.
+
+        ``platform_url`` defaults to the hosted platform (or the
+        AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL override);
+        ``api_token`` defaults to AGENT_SENTINEL_API_KEY.
+        """
         with cls._lock:
             cls._config = KillSwitchConfig(
-                platform_url=platform_url.rstrip("/"),
+                platform_url=platform_url,
                 api_token=api_token,
                 cache_ttl=cache_ttl,
                 enabled=enabled,
             )
             cls._cache.clear()
-        logger.info(f"Kill switch client configured for {platform_url}")
+        logger.info(f"Kill switch client configured for {cls._config.platform_url}")
 
     @classmethod
     def is_configured(cls) -> bool:
@@ -85,19 +98,39 @@ class KillSwitchClient:
         return cls._config is not None and cls._config.enabled
 
     @classmethod
-    def is_killed(cls, target_type: str, target_id: str) -> bool:
+    def is_killed(
+        cls, target_type: str, target_id: str, fail_closed: bool = False
+    ) -> bool:
         """
         Check if a target is killed.
 
         Args:
             target_type: "agent", "run", or "mission"
             target_id: The identifier to check
+            fail_closed: If True, raise KillSwitchUnavailableError instead of
+                assuming not-killed when the check itself cannot be completed
+                (httpx missing, platform unreachable, non-200 response).
 
         Returns:
             True if the target is killed, False otherwise.
-            Returns False (fail-open) if platform is unreachable.
+            Returns False (fail-open) if platform is unreachable and
+            fail_closed is False.
+
+        Raises:
+            KillSwitchUnavailableError: if fail_closed is True and the check
+                could not be completed.
         """
-        if not cls.is_configured() or not HTTPX_AVAILABLE:
+        if not cls.is_configured():
+            return False
+
+        if not HTTPX_AVAILABLE:
+            if fail_closed:
+                raise KillSwitchUnavailableError(
+                    "httpx is not installed; kill switch cannot be checked "
+                    f"for {target_type}:{target_id}.",
+                    target_type=target_type,
+                    target_id=target_id,
+                )
             return False
 
         cache_key = f"{target_type}:{target_id}"
@@ -112,7 +145,7 @@ class KillSwitchClient:
         # Cache miss or expired -- query platform
         try:
             url = f"{cls._config.platform_url}/api/v1/kill-switch/check"
-            headers = {"Authorization": f"ApiKey {cls._config.api_token}"}
+            headers = build_identity_headers(cls._config.api_token)
             params = {"target_type": target_type, "target_id": target_id}
 
             with httpx.Client(timeout=5.0) as client:
@@ -131,13 +164,29 @@ class KillSwitchClient:
 
                 return killed
             else:
+                if fail_closed:
+                    raise KillSwitchUnavailableError(
+                        f"Kill switch check returned {response.status_code} "
+                        f"for {target_type}:{target_id}.",
+                        target_type=target_type,
+                        target_id=target_id,
+                    )
                 logger.warning(
                     f"Kill switch check returned {response.status_code}, "
                     f"failing open for {target_type}:{target_id}"
                 )
                 return False
 
+        except KillSwitchUnavailableError:
+            raise
         except Exception as e:
+            if fail_closed:
+                raise KillSwitchUnavailableError(
+                    f"Kill switch check failed ({e}) for "
+                    f"{target_type}:{target_id}.",
+                    target_type=target_type,
+                    target_id=target_id,
+                ) from e
             # Fail-open: platform unreachable -> assume not killed
             logger.warning(
                 f"Kill switch check failed ({e}), "
@@ -151,6 +200,7 @@ class KillSwitchClient:
         agent_id: Optional[str] = None,
         run_id: Optional[str] = None,
         mission_id: Optional[str] = None,
+        fail_closed: bool = False,
     ) -> None:
         """
         Check kill switch for all provided targets. Raises AgentKilledError
@@ -160,9 +210,14 @@ class KillSwitchClient:
             agent_id: Agent identifier to check
             run_id: Run identifier to check
             mission_id: Mission identifier to check
+            fail_closed: If True, a kill switch check that cannot complete
+                raises KillSwitchUnavailableError instead of assuming
+                not-killed. See is_killed().
 
         Raises:
             AgentKilledError: If any target is killed
+            KillSwitchUnavailableError: If fail_closed is True and a check
+                could not be completed
         """
         if not cls.is_configured():
             return
@@ -172,7 +227,7 @@ class KillSwitchClient:
             ("run", run_id),
             ("mission", mission_id),
         ]:
-            if target_id and cls.is_killed(target_type, target_id):
+            if target_id and cls.is_killed(target_type, target_id, fail_closed=fail_closed):
                 raise AgentKilledError(
                     f"{target_type} '{target_id}' has been killed",
                     target_type=target_type,

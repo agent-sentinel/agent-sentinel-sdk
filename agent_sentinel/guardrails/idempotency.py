@@ -23,6 +23,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Tuple
 
 
@@ -31,20 +32,34 @@ class _Entry:
     value: Any
     stored_at: float
     expires_at: float
+    first_seen_at: datetime
+    ttl_seconds: float
 
 
 class IdempotencyHit(Exception):
     """
     Raised by the cache when an idempotency key was previously seen.
-    Carries the prior result so the decorator can return it transparently.
+    Carries the prior result so the decorator can return it transparently,
+    plus the wall-clock timestamp and TTL of the original insertion so the
+    intervention record can surface them to the console.
     """
 
-    def __init__(self, action: str, key: str, value: Any, stored_at: float) -> None:
+    def __init__(
+        self,
+        action: str,
+        key: str,
+        value: Any,
+        stored_at: float,
+        first_seen_at: datetime,
+        ttl_seconds: float,
+    ) -> None:
         super().__init__(f"Idempotency hit for action={action!r} key={key!r}")
         self.action = action
         self.key = key
         self.value = value
         self.stored_at = stored_at
+        self.first_seen_at = first_seen_at
+        self.ttl_seconds = ttl_seconds
 
 
 class IdempotencyCache:
@@ -78,7 +93,14 @@ class IdempotencyCache:
             if entry.expires_at <= now:
                 self._entries.pop((scope, key), None)
                 return None
-        raise IdempotencyHit(action=action, key=key, value=entry.value, stored_at=entry.stored_at)
+        raise IdempotencyHit(
+            action=action,
+            key=key,
+            value=entry.value,
+            stored_at=entry.stored_at,
+            first_seen_at=entry.first_seen_at,
+            ttl_seconds=entry.ttl_seconds,
+        )
 
     def store(
         self,
@@ -97,6 +119,8 @@ class IdempotencyCache:
                 value=value,
                 stored_at=now,
                 expires_at=now + ttl,
+                first_seen_at=datetime.now(timezone.utc),
+                ttl_seconds=ttl,
             )
 
     def clear(self) -> None:
