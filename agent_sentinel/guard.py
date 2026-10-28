@@ -23,7 +23,8 @@ import inspect
 import time
 import logging
 from datetime import datetime
-from typing import Optional, Any, Callable, Literal
+from typing import Any, Literal
+from collections.abc import Callable
 
 from .ledger import Ledger
 from .cost import CostTracker
@@ -80,7 +81,7 @@ def _reason_code_to_intervention() -> dict:
     }
 
 
-def _reason_code_of(error) -> "str | None":
+def _reason_code_of(error) -> str | None:
     """
     Read the structured reason code wherever it lives.
 
@@ -131,7 +132,7 @@ def _record_policy_intervention(
     # Build structured context for guardrail-type-specific UI rendering.
     # Versioned payload so the console can dispatch to a typed detail panel
     # instead of rendering generic intervention text.
-    context: Optional[dict[str, Any]] = None
+    context: dict[str, Any] | None = None
     if isinstance(error, PolicyViolationError) and isinstance(error.details, dict):
         details = error.details
         reason_code = details.get("reason_code")
@@ -282,7 +283,7 @@ def _resolve_idempotency_key(
     key: Any,
     args: tuple,
     kwargs: dict,
-) -> Optional[str]:
+) -> str | None:
     """
     Resolve an idempotency key argument on @guarded_action.
 
@@ -346,24 +347,24 @@ def _record_idempotency_intervention(
 
 
 def guarded_action(
-    name: Optional[str] = None,
+    name: str | None = None,
     cost_usd: float = 0.0,
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
     requires_human_approval: bool = False,
-    approval_description: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    mission_id: Optional[str] = None,
+    approval_description: str | None = None,
+    agent_id: str | None = None,
+    task_id: str | None = None,
+    mission_id: str | None = None,
     produces_evidence: bool = False,
     is_commit: bool = False,
-    requires: Optional[list[str]] = None,
-    argument_constraints: Optional[dict] = None,
-    evidence_max_age_seconds: Optional[int] = None,
-    grounding_rules: Optional[dict] = None,
-    risk_level: Optional[str] = None,
-    idempotency_key: Optional[Any] = None,
-    idempotency_ttl_seconds: Optional[float] = None,
-    fail_closed: Optional[bool] = None,
+    requires: list[str] | None = None,
+    argument_constraints: dict | None = None,
+    evidence_max_age_seconds: int | None = None,
+    grounding_rules: dict | None = None,
+    risk_level: str | None = None,
+    idempotency_key: Any | None = None,
+    idempotency_ttl_seconds: float | None = None,
+    fail_closed: bool | None = None,
     impact: Literal["read", "low", "medium", "high"] = "medium",
 ):
     """
@@ -487,22 +488,22 @@ async def _execute_async(
     func: Callable,
     action_name: str,
     cost: float,
-    tags: Optional[list[str]],
+    tags: list[str] | None,
     requires_approval: bool,
     approval_description: str,
-    agent_id: Optional[str],
-    task_id: Optional[str],
-    mission_id: Optional[str],
+    agent_id: str | None,
+    task_id: str | None,
+    mission_id: str | None,
     produces_evidence: bool,
     is_commit: bool,
-    requires: Optional[list[str]],
-    argument_constraints: Optional[dict],
-    evidence_max_age_seconds: Optional[int],
-    grounding_rules: Optional[dict],
-    risk_level: Optional[str] = None,
-    idempotency_key: Optional[Any] = None,
-    idempotency_ttl_seconds: Optional[float] = None,
-    fail_closed: Optional[bool] = None,
+    requires: list[str] | None,
+    argument_constraints: dict | None,
+    evidence_max_age_seconds: int | None,
+    grounding_rules: dict | None,
+    risk_level: str | None = None,
+    idempotency_key: Any | None = None,
+    idempotency_ttl_seconds: float | None = None,
+    fail_closed: bool | None = None,
     impact: str = "medium",
     *args,
     **kwargs
@@ -860,22 +861,22 @@ def _execute_sync(
     func: Callable,
     action_name: str,
     cost: float,
-    tags: Optional[list[str]],
+    tags: list[str] | None,
     requires_approval: bool,
     approval_description: str,
-    agent_id: Optional[str],
-    task_id: Optional[str],
-    mission_id: Optional[str],
+    agent_id: str | None,
+    task_id: str | None,
+    mission_id: str | None,
     produces_evidence: bool,
     is_commit: bool,
-    requires: Optional[list[str]],
-    argument_constraints: Optional[dict],
-    evidence_max_age_seconds: Optional[int],
-    grounding_rules: Optional[dict],
-    risk_level: Optional[str] = None,
-    idempotency_key: Optional[Any] = None,
-    idempotency_ttl_seconds: Optional[float] = None,
-    fail_closed: Optional[bool] = None,
+    requires: list[str] | None,
+    argument_constraints: dict | None,
+    evidence_max_age_seconds: int | None,
+    grounding_rules: dict | None,
+    risk_level: str | None = None,
+    idempotency_key: Any | None = None,
+    idempotency_ttl_seconds: float | None = None,
+    fail_closed: bool | None = None,
     impact: str = "medium",
     *args,
     **kwargs
@@ -1200,16 +1201,16 @@ def _safe_log(
     args: tuple,
     kwargs: dict,
     result: Any,
-    error: Optional[str],
+    error: str | None,
     cost: float,
     duration: float,
     outcome: str,
-    tags: Optional[list[str]],
-    compliance_metadata: Optional[dict] = None,
-    agent_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    mission_id: Optional[str] = None,
-    run_id: Optional[str] = None,
+    tags: list[str] | None,
+    compliance_metadata: dict | None = None,
+    agent_id: str | None = None,
+    task_id: str | None = None,
+    mission_id: str | None = None,
+    run_id: str | None = None,
     impact: str = "medium",
 ):
     """

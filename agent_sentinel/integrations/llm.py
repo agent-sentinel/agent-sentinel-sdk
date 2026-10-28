@@ -40,7 +40,8 @@ from __future__ import annotations
 import functools
 import logging
 import time
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any
+from collections.abc import Callable
 
 from ..cost import CostTracker
 from ..ledger import Ledger
@@ -58,7 +59,7 @@ except ImportError:
 logger = logging.getLogger("agent_sentinel.integrations.llm")
 
 # Track instrumentation state
-_INSTRUMENTED: Dict[str, bool] = {
+_INSTRUMENTED: dict[str, bool] = {
     "openai": False,
     "anthropic": False,
     "grok": False,
@@ -68,7 +69,7 @@ _INSTRUMENTED: Dict[str, bool] = {
 
 def instrument_openai(
     auto_log: bool = True,
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
 ) -> None:
     """
     Instrument OpenAI client to automatically track costs.
@@ -112,7 +113,7 @@ def instrument_openai(
 
 def instrument_anthropic(
     auto_log: bool = True,
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
 ) -> None:
     """
     Instrument Anthropic client to automatically track costs.
@@ -157,7 +158,7 @@ def instrument_anthropic(
 
 def instrument_grok(
     auto_log: bool = True,
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
 ) -> None:
     """
     Instrument Grok/xAI client to automatically track costs.
@@ -196,7 +197,7 @@ def instrument_grok(
 
 def instrument_gemini(
     auto_log: bool = True,
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
 ) -> None:
     """
     Instrument Google Gemini client to automatically track costs.
@@ -505,7 +506,7 @@ def _wrap_gemini_client(
     genai_module.GenerativeModel.generate_content = wrapped_generate
 
 
-def get_token_costs() -> Dict[str, Any]:
+def get_token_costs() -> dict[str, Any]:
     """
     Get current token costs across all providers.
     
@@ -522,8 +523,8 @@ def get_token_costs() -> Dict[str, Any]:
     snapshot = CostTracker.get_snapshot()
     
     # Group by provider
-    by_provider: Dict[str, float] = {}
-    by_model: Dict[str, float] = {}
+    by_provider: dict[str, float] = {}
+    by_model: dict[str, float] = {}
     
     for action, cost in snapshot["action_costs"].items():
         # Extract provider from action name (e.g., "openai:gpt-4")

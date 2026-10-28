@@ -19,7 +19,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger("agent_sentinel")
 
@@ -34,12 +34,12 @@ class EvidenceRecord:
     """
     action_name: str
     timestamp: float = field(default_factory=time.time)
-    args_hash: Optional[str] = None
+    args_hash: str | None = None
     result_summary: Any = None
-    raw_kwargs: Optional[Dict[str, Any]] = None
-    run_id: Optional[str] = None
+    raw_kwargs: dict[str, Any] | None = None
+    run_id: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         d = {
             "action_name": self.action_name,
@@ -53,7 +53,7 @@ class EvidenceRecord:
         return d
 
 
-def _hash_args(kwargs: Optional[Dict[str, Any]]) -> Optional[str]:
+def _hash_args(kwargs: dict[str, Any] | None) -> str | None:
     """Create a stable hash of action arguments for matching."""
     if not kwargs:
         return None
@@ -101,14 +101,14 @@ class EvidenceTracker:
     """
 
     _lock = threading.Lock()
-    _run_evidence: List[EvidenceRecord] = []
-    _session_evidence: List[EvidenceRecord] = []
+    _run_evidence: list[EvidenceRecord] = []
+    _session_evidence: list[EvidenceRecord] = []
 
     @classmethod
     def record_evidence(
         cls,
         action_name: str,
-        kwargs: Optional[Dict[str, Any]] = None,
+        kwargs: dict[str, Any] | None = None,
         result: Any = None,
     ) -> None:
         """
@@ -146,7 +146,7 @@ class EvidenceTracker:
     def has_evidence(
         cls,
         action_name: str,
-        max_age_seconds: Optional[int] = None,
+        max_age_seconds: int | None = None,
     ) -> bool:
         """
         Check if evidence exists for a given action.
@@ -173,8 +173,8 @@ class EvidenceTracker:
     def get_evidence(
         cls,
         action_name: str,
-        max_age_seconds: Optional[int] = None,
-    ) -> List[EvidenceRecord]:
+        max_age_seconds: int | None = None,
+    ) -> list[EvidenceRecord]:
         """
         Get all evidence records for a given action.
 
@@ -200,9 +200,9 @@ class EvidenceTracker:
     @classmethod
     def check_requirements(
         cls,
-        requires: List[str],
-        max_age_seconds: Optional[int] = None,
-    ) -> tuple[bool, List[str], List[str]]:
+        requires: list[str],
+        max_age_seconds: int | None = None,
+    ) -> tuple[bool, list[str], list[str]]:
         """
         Check if all required evidence has been produced.
 
@@ -246,10 +246,10 @@ class EvidenceTracker:
     @classmethod
     def check_groundedness(
         cls,
-        action_kwargs: Dict[str, Any],
-        grounding_rules: Dict[str, Dict[str, str]],
-        max_age_seconds: Optional[int] = None,
-    ) -> tuple[bool, List[Dict[str, Any]]]:
+        action_kwargs: dict[str, Any],
+        grounding_rules: dict[str, dict[str, str]],
+        max_age_seconds: int | None = None,
+    ) -> tuple[bool, list[dict[str, Any]]]:
         """
         Verify that action arguments are grounded in prior evidence.
 

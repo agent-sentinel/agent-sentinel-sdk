@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Agent Sentinel SDK! We welcome co
 
 ### Prerequisites
 
-- Python 3.9 or higher
+- Python 3.11 or higher
 - [uv](https://github.com/astral-sh/uv) for dependency management (recommended)
 - Git
 

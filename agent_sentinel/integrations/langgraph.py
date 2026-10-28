@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any
+from collections.abc import Callable, Sequence
 
 from .tool_executor import SentinelToolExecutor, ToolResult
 
@@ -39,7 +40,7 @@ except ImportError:
     ToolMessage = Any  # type: ignore
 
 
-ToolSpec = Tuple[Callable[..., Any], Dict[str, Any]]
+ToolSpec = tuple[Callable[..., Any], dict[str, Any]]
 
 
 class SentinelToolNode:
@@ -59,10 +60,10 @@ class SentinelToolNode:
                supports produces_evidence, is_commit, requires, grounding_rules, etc.
     """
 
-    def __init__(self, tools: Dict[str, ToolSpec]):
+    def __init__(self, tools: dict[str, ToolSpec]):
         self._executor = SentinelToolExecutor(tools)
 
-    def __call__(self, state: Dict[str, Any]) -> Dict[str, List[Any]]:
+    def __call__(self, state: dict[str, Any]) -> dict[str, list[Any]]:
         """
         Process tool calls from the last AIMessage in state.
 
@@ -99,7 +100,7 @@ class SentinelToolNode:
 
         return {"messages": results}
 
-    async def ainvoke(self, state: Dict[str, Any]) -> Dict[str, List[Any]]:
+    async def ainvoke(self, state: dict[str, Any]) -> dict[str, list[Any]]:
         """Async variant of __call__."""
         messages = state.get("messages", [])
         if not messages:
@@ -124,7 +125,7 @@ class SentinelToolNode:
         return {"messages": results}
 
     @staticmethod
-    def _extract_tool_calls(message: Any) -> List[Dict[str, Any]]:
+    def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
         """Extract tool calls from an AIMessage or dict."""
         # LangChain AIMessage
         if hasattr(message, "tool_calls") and message.tool_calls:

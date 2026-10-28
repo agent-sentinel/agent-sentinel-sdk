@@ -282,6 +282,7 @@ class TestContextPropagation:
     
     def test_run_name_in_metadata(self):
         """Test that run_name is propagated to ledger entries."""
+        PolicyEngine.configure(run_budget=1.0)
         handler = SentinelCallbackHandler(
             run_name="my_custom_run",
             track_costs=True

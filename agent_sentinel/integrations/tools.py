@@ -6,21 +6,22 @@ with tool-specific framing and discovery attributes.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 from ..guard import guarded_action
 
 
 def sentinel_tool(
-    name: Optional[str] = None,
+    name: str | None = None,
     cost_usd: float = 0.0,
-    tags: Optional[list[str]] = None,
+    tags: list[str] | None = None,
     produces_evidence: bool = False,
     is_commit: bool = False,
-    requires: Optional[list[str]] = None,
-    argument_constraints: Optional[dict] = None,
-    evidence_max_age_seconds: Optional[int] = None,
-    grounding_rules: Optional[dict] = None,
+    requires: list[str] | None = None,
+    argument_constraints: dict | None = None,
+    evidence_max_age_seconds: int | None = None,
+    grounding_rules: dict | None = None,
 ):
     """
     Decorator to register a function as a sentinel-guarded tool.

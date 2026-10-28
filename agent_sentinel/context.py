@@ -15,21 +15,20 @@ from __future__ import annotations
 
 import contextvars
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 
 @dataclass(frozen=True)
 class _ContextData:
     """Immutable snapshot of execution context values."""
-    agent_id: Optional[str] = None
-    run_id: Optional[str] = None
-    task_id: Optional[str] = None
-    mission_id: Optional[str] = None
-    harness: Optional[str] = None
-    principal: Optional[str] = None
+    agent_id: str | None = None
+    run_id: str | None = None
+    task_id: str | None = None
+    mission_id: str | None = None
+    harness: str | None = None
+    principal: str | None = None
 
 
-_current_context: contextvars.ContextVar[Optional[_ContextData]] = contextvars.ContextVar(
+_current_context: contextvars.ContextVar[_ContextData | None] = contextvars.ContextVar(
     "agent_sentinel_context", default=None
 )
 
@@ -59,12 +58,12 @@ class ExecutionContext:
 
     def __init__(
         self,
-        agent_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-        task_id: Optional[str] = None,
-        mission_id: Optional[str] = None,
-        harness: Optional[str] = None,
-        principal: Optional[str] = None,
+        agent_id: str | None = None,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        mission_id: str | None = None,
+        harness: str | None = None,
+        principal: str | None = None,
     ):
         self._data = _ContextData(
             agent_id=agent_id,
@@ -74,11 +73,11 @@ class ExecutionContext:
             harness=harness,
             principal=principal,
         )
-        self._token: Optional[contextvars.Token] = None
+        self._token: contextvars.Token | None = None
 
     # -- Sync context manager --
 
-    def __enter__(self) -> "ExecutionContext":
+    def __enter__(self) -> ExecutionContext:
         self._token = _current_context.set(self._data)
         return self
 
@@ -89,7 +88,7 @@ class ExecutionContext:
 
     # -- Async context manager --
 
-    async def __aenter__(self) -> "ExecutionContext":
+    async def __aenter__(self) -> ExecutionContext:
         return self.__enter__()
 
     async def __aexit__(self, _exc_type, _exc_val, _exc_tb) -> None:
@@ -98,42 +97,42 @@ class ExecutionContext:
     # -- Static accessors --
 
     @staticmethod
-    def current() -> Optional[_ContextData]:
+    def current() -> _ContextData | None:
         """Return the current execution context, or None if not set."""
         return _current_context.get()
 
     @staticmethod
-    def get_agent_id() -> Optional[str]:
+    def get_agent_id() -> str | None:
         """Return the current agent_id, or None."""
         ctx = _current_context.get()
         return ctx.agent_id if ctx else None
 
     @staticmethod
-    def get_run_id() -> Optional[str]:
+    def get_run_id() -> str | None:
         """Return the current run_id, or None."""
         ctx = _current_context.get()
         return ctx.run_id if ctx else None
 
     @staticmethod
-    def get_task_id() -> Optional[str]:
+    def get_task_id() -> str | None:
         """Return the current task_id, or None."""
         ctx = _current_context.get()
         return ctx.task_id if ctx else None
 
     @staticmethod
-    def get_mission_id() -> Optional[str]:
+    def get_mission_id() -> str | None:
         """Return the current mission_id, or None."""
         ctx = _current_context.get()
         return ctx.mission_id if ctx else None
 
     @staticmethod
-    def get_harness() -> Optional[str]:
+    def get_harness() -> str | None:
         """Return the current harness, or None."""
         ctx = _current_context.get()
         return ctx.harness if ctx else None
 
     @staticmethod
-    def get_principal() -> Optional[str]:
+    def get_principal() -> str | None:
         """Return the current principal, or None."""
         ctx = _current_context.get()
         return ctx.principal if ctx else None
@@ -141,9 +140,9 @@ class ExecutionContext:
 
 def build_identity_headers(
     api_token: str,
-    agent_id: Optional[str] = None,
-    run_id: Optional[str] = None,
-) -> Dict[str, str]:
+    agent_id: str | None = None,
+    run_id: str | None = None,
+) -> dict[str, str]:
     """
     Build the standard auth + identity headers sent with every platform request.
 

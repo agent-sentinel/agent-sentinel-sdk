@@ -10,26 +10,25 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Dict, List, Optional
 
 logger = logging.getLogger("agent_sentinel")
 
 
 def configure(
     api_key: str,
-    platform_url: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    run_id: Optional[str] = None,
-    harness: Optional[str] = None,
-    principal: Optional[str] = None,
+    platform_url: str | None = None,
+    agent_id: str | None = None,
+    run_id: str | None = None,
+    harness: str | None = None,
+    principal: str | None = None,
     # Budget / policy shortcuts
-    run_budget: Optional[float] = None,
-    session_budget: Optional[float] = None,
-    action_budgets: Optional[Dict[str, float]] = None,
-    denied_actions: Optional[List[str]] = None,
-    rate_limits: Optional[Dict] = None,
+    run_budget: float | None = None,
+    session_budget: float | None = None,
+    action_budgets: dict[str, float] | None = None,
+    denied_actions: list[str] | None = None,
+    rate_limits: dict | None = None,
     # Enforcement
-    fail_closed: Optional[bool] = None,
+    fail_closed: bool | None = None,
     # Auto-instrumentation
     auto_instrument: bool = False,
 ) -> None:

@@ -9,7 +9,6 @@ Tests cover:
 from __future__ import annotations
 
 import pytest
-from typing import Type
 
 from agent_sentinel.errors import (
     AgentSentinelError,

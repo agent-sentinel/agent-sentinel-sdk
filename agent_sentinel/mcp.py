@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 try:
     import httpx
@@ -78,7 +78,7 @@ class MCPTool:
     name: str
     description: str
     type: str
-    input_schema: Dict[str, Any]
+    input_schema: dict[str, Any]
     
     def __repr__(self) -> str:
         return f"MCPTool(name={self.name!r}, type={self.type!r})"
@@ -101,7 +101,7 @@ class MCPPrompt:
     """MCP Prompt template"""
     name: str
     description: str
-    arguments: List[Dict[str, Any]]
+    arguments: list[dict[str, Any]]
     
     def __repr__(self) -> str:
         return f"MCPPrompt(name={self.name!r})"
@@ -111,9 +111,9 @@ class MCPPrompt:
 class MCPToolCallResult:
     """Result of an MCP tool call"""
     success: bool
-    data: Optional[Any] = None
-    error: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    data: Any | None = None
+    error: str | None = None
+    metadata: dict[str, Any] | None = None
     
     def __repr__(self) -> str:
         status = "success" if self.success else "error"
@@ -157,8 +157,8 @@ class MCPClient:
     
     def __init__(
         self,
-        platform_url: Optional[str] = None,
-        api_token: Optional[str] = None,
+        platform_url: str | None = None,
+        api_token: str | None = None,
         timeout: float = 30.0
     ):
         if not HTTPX_AVAILABLE:
@@ -175,12 +175,12 @@ class MCPClient:
         self.api_base = f"{self.platform_url}/api/v1/mcp"
         
         # HTTP client
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         
         # Cache
-        self._tools_cache: Optional[List[MCPTool]] = None
-        self._resources_cache: Optional[List[MCPResource]] = None
-        self._prompts_cache: Optional[List[MCPPrompt]] = None
+        self._tools_cache: list[MCPTool] | None = None
+        self._resources_cache: list[MCPResource] | None = None
+        self._prompts_cache: list[MCPPrompt] | None = None
     
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client"""
@@ -211,7 +211,7 @@ class MCPClient:
     # Discovery API
     # ========================================================================
     
-    async def list_tools(self, use_cache: bool = True) -> List[MCPTool]:
+    async def list_tools(self, use_cache: bool = True) -> list[MCPTool]:
         """
         List all available MCP tools.
         
@@ -247,7 +247,7 @@ class MCPClient:
         self._tools_cache = tools
         return tools
     
-    async def list_resources(self, use_cache: bool = True) -> List[MCPResource]:
+    async def list_resources(self, use_cache: bool = True) -> list[MCPResource]:
         """
         List all available MCP resources.
         
@@ -283,7 +283,7 @@ class MCPClient:
         self._resources_cache = resources
         return resources
     
-    async def list_prompts(self, use_cache: bool = True) -> List[MCPPrompt]:
+    async def list_prompts(self, use_cache: bool = True) -> list[MCPPrompt]:
         """
         List all available MCP prompt templates.
         
@@ -325,7 +325,7 @@ class MCPClient:
     async def call_tool(
         self,
         tool_name: str,
-        arguments: Optional[Dict[str, Any]] = None
+        arguments: dict[str, Any] | None = None
     ) -> MCPToolCallResult:
         """
         Execute an MCP tool call.
@@ -391,7 +391,7 @@ class MCPClient:
     # Resource Access API
     # ========================================================================
     
-    async def get_resource(self, resource_uri: str) -> Optional[Any]:
+    async def get_resource(self, resource_uri: str) -> Any | None:
         """
         Get data from an MCP resource.
         
@@ -436,8 +436,8 @@ class MCPClient:
     async def execute_prompt(
         self,
         prompt_name: str,
-        arguments: Optional[Dict[str, Any]] = None
-    ) -> Optional[Any]:
+        arguments: dict[str, Any] | None = None
+    ) -> Any | None:
         """
         Execute an MCP prompt template.
         
@@ -484,10 +484,10 @@ class MCPClient:
     async def create_policy(
         self,
         name: str,
-        run_budget: Optional[float] = None,
-        session_budget: Optional[float] = None,
+        run_budget: float | None = None,
+        session_budget: float | None = None,
         **kwargs
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Convenience method to create a policy.
         
@@ -512,9 +512,9 @@ class MCPClient:
     async def list_runs(
         self,
         limit: int = 100,
-        status: Optional[str] = None,
+        status: str | None = None,
         **kwargs
-    ) -> Optional[List[Dict[str, Any]]]:
+    ) -> list[dict[str, Any]] | None:
         """
         Convenience method to list runs.
         
@@ -533,7 +533,7 @@ class MCPClient:
         result = await self.call_tool("list_runs", arguments)
         return result.data if result.success else None
     
-    async def get_pending_approvals(self) -> Optional[Dict[str, Any]]:
+    async def get_pending_approvals(self) -> dict[str, Any] | None:
         """
         Convenience method to get pending approvals.
         
@@ -545,7 +545,7 @@ class MCPClient:
     async def approve_action(
         self,
         action_id: str,
-        notes: Optional[str] = None
+        notes: str | None = None
     ) -> bool:
         """
         Convenience method to approve an action.
@@ -585,7 +585,7 @@ class MCPClient:
         })
         return result.success
     
-    async def get_agent_stats(self, days: int = 7) -> Optional[Dict[str, Any]]:
+    async def get_agent_stats(self, days: int = 7) -> dict[str, Any] | None:
         """
         Convenience method to get agent statistics.
         
@@ -603,12 +603,12 @@ class MCPClient:
 # Module-level convenience functions
 # ============================================================================
 
-_default_client: Optional[MCPClient] = None
+_default_client: MCPClient | None = None
 
 
 def set_default_client(
-    platform_url: Optional[str] = None,
-    api_token: Optional[str] = None,
+    platform_url: str | None = None,
+    api_token: str | None = None,
     timeout: float = 30.0
 ):
     """
@@ -633,7 +633,7 @@ def set_default_client(
     )
 
 
-def get_default_client() -> Optional[MCPClient]:
+def get_default_client() -> MCPClient | None:
     """Get the default MCP client"""
     return _default_client
 

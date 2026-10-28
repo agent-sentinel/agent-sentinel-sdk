@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Pattern, Tuple
+from typing import Any
+from re import Pattern
+from collections.abc import Iterable
 
 # ---------------------------------------------------------------------------
 # Regex library
@@ -55,7 +57,7 @@ _PRIVATE_KEY_BLOCK = re.compile(
     r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"
 )
 
-_DEFAULT_PATTERNS: Dict[str, Pattern[str]] = {
+_DEFAULT_PATTERNS: dict[str, Pattern[str]] = {
     "email": _EMAIL,
     "us_ssn": _US_SSN,
     "credit_card": _CREDIT_CARD_CANDIDATE,
@@ -94,7 +96,7 @@ class PIIMatch:
     matched_text: str      # redacted preview (first/last 2 chars only)
     severity: str = "high"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "category": self.category,
             "field_path": self.field_path,
@@ -115,7 +117,7 @@ class PIIRule:
         redact_preview: If True, redact matched text to first/last 2 chars.
     """
     categories: Iterable[str] = field(default_factory=lambda: tuple(_DEFAULT_PATTERNS.keys()))
-    extra_patterns: Dict[str, str] = field(default_factory=dict)
+    extra_patterns: dict[str, str] = field(default_factory=dict)
     allow_categories: Iterable[str] = field(default_factory=tuple)
     redact_preview: bool = True
 
@@ -133,7 +135,7 @@ def _redact(text: str, enabled: bool) -> str:
     return f"{text[:2]}{'*' * (len(text) - 4)}{text[-2:]}"
 
 
-def detect_pii(text: str, rule: Optional[PIIRule] = None) -> List[PIIMatch]:
+def detect_pii(text: str, rule: PIIRule | None = None) -> list[PIIMatch]:
     """
     Detect PII in a single string.
 
@@ -147,7 +149,7 @@ def detect_pii(text: str, rule: Optional[PIIRule] = None) -> List[PIIMatch]:
     allow = set(rule.allow_categories)
     categories = [c for c in rule.categories if c not in allow]
 
-    patterns: List[Tuple[str, Pattern[str]]] = [
+    patterns: list[tuple[str, Pattern[str]]] = [
         (c, _DEFAULT_PATTERNS[c]) for c in categories if c in _DEFAULT_PATTERNS
     ]
     for name, raw in rule.extra_patterns.items():
@@ -159,7 +161,7 @@ def detect_pii(text: str, rule: Optional[PIIRule] = None) -> List[PIIMatch]:
             # Silently skip invalid user regex — never crash agent execution.
             continue
 
-    matches: List[PIIMatch] = []
+    matches: list[PIIMatch] = []
     for category, pattern in patterns:
         for m in pattern.finditer(text):
             matched = m.group(0)
@@ -185,13 +187,13 @@ class PIIGuard:
 
     @staticmethod
     def scan_kwargs(
-        kwargs: Optional[Dict[str, Any]],
-        rule: Optional[PIIRule] = None,
-    ) -> List[PIIMatch]:
+        kwargs: dict[str, Any] | None,
+        rule: PIIRule | None = None,
+    ) -> list[PIIMatch]:
         if not kwargs:
             return []
         rule = rule or PIIRule()
-        results: List[PIIMatch] = []
+        results: list[PIIMatch] = []
         PIIGuard._walk("", kwargs, rule, results)
         return results
 
@@ -200,7 +202,7 @@ class PIIGuard:
         prefix: str,
         value: Any,
         rule: PIIRule,
-        sink: List[PIIMatch],
+        sink: list[PIIMatch],
     ) -> None:
         if isinstance(value, str):
             for m in detect_pii(value, rule):

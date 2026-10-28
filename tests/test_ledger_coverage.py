@@ -15,7 +15,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -27,7 +27,7 @@ class TestSafeEncoder:
 
     def test_encode_datetime(self) -> None:
         """Test encoding datetime objects."""
-        dt = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
         encoded = json.dumps({"time": dt}, cls=SafeEncoder)
         decoded = json.loads(encoded)
         assert decoded["time"] == "2025-01-01T12:00:00+00:00"
@@ -60,12 +60,12 @@ class TestSafeEncoder:
         """Test encoding deeply nested structures with mixed types."""
         test_obj = {
             "uuid": uuid.uuid4(),
-            "timestamp": datetime.now(timezone.utc),
+            "timestamp": datetime.now(UTC),
             "nested": {
                 "id": uuid.uuid4(),
-                "date": datetime(2025, 1, 1, tzinfo=timezone.utc),
+                "date": datetime(2025, 1, 1, tzinfo=UTC),
             },
-            "list": [uuid.uuid4(), datetime.now(timezone.utc)],
+            "list": [uuid.uuid4(), datetime.now(UTC)],
         }
         encoded = json.dumps(test_obj, cls=SafeEncoder)
         decoded = json.loads(encoded)
@@ -190,7 +190,7 @@ class TestLedgerWriteOperations:
         log_path = Ledger.get_log_path()
         assert log_path.exists()
         
-        with open(log_path, "r") as f:
+        with open(log_path) as f:
             entry_line = f.readline()
             entry = json.loads(entry_line)
         
@@ -218,7 +218,7 @@ class TestLedgerWriteOperations:
             )
         
         log_path = Ledger.get_log_path()
-        with open(log_path, "r") as f:
+        with open(log_path) as f:
             lines = f.readlines()
         
         assert len(lines) == 5
@@ -237,7 +237,7 @@ class TestLedgerWriteOperations:
         complex_output = {
             "data": [1, 2, 3],
             "metadata": {"id": uuid.uuid4()},
-            "timestamp": datetime.now(timezone.utc),
+            "timestamp": datetime.now(UTC),
         }
         
         Ledger.record(
@@ -251,7 +251,7 @@ class TestLedgerWriteOperations:
         )
         
         log_path = Ledger.get_log_path()
-        with open(log_path, "r") as f:
+        with open(log_path) as f:
             entry = json.loads(f.readline())
         
         assert entry["payload"]["inputs"]["query"] == "test"
@@ -275,7 +275,7 @@ class TestLedgerWriteOperations:
         )
         
         log_path = Ledger.get_log_path()
-        with open(log_path, "r") as f:
+        with open(log_path) as f:
             entry = json.loads(f.readline())
         
         assert entry["outcome"] == "error"
@@ -299,7 +299,7 @@ class TestLedgerWriteOperations:
         )
         
         log_path = Ledger.get_log_path()
-        with open(log_path, "r") as f:
+        with open(log_path) as f:
             entry = json.loads(f.readline())
         
         assert entry["duration_ms"] == 123.457
@@ -374,7 +374,7 @@ class TestLedgerRotation:
             )
         
         log_path = Ledger.get_log_path()
-        with open(log_path, "r") as f:
+        with open(log_path) as f:
             entries = [json.loads(line) for line in f.readlines()]
         
         assert len(entries) == 100
@@ -403,7 +403,7 @@ class TestLedgerRotation:
         log_path = Ledger.get_log_path()
         
         # Verify JSONL format: each line is valid JSON
-        with open(log_path, "r") as f:
+        with open(log_path) as f:
             for line in f:
                 assert line.endswith("\n")
                 entry = json.loads(line.rstrip("\n"))
@@ -433,7 +433,7 @@ class TestLedgerRotation:
         log_path = Ledger.get_log_path()
         
         # All entries should be present and valid
-        with open(log_path, "r") as f:
+        with open(log_path) as f:
             entries = [json.loads(line) for line in f.readlines()]
         
         assert len(entries) == 10

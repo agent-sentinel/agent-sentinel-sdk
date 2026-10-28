@@ -15,7 +15,7 @@ import json
 import logging
 import time
 from functools import partial
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -91,8 +91,8 @@ class FakePlatform:
         self,
         polls: list[Any],
         *,
-        first: Optional[dict] = None,
-        retry: Optional[dict] = None,
+        first: dict | None = None,
+        retry: dict | None = None,
     ) -> None:
         self.polls = list(polls)
         self.first = first if first is not None else _require_approval()
@@ -187,7 +187,7 @@ def _config(*, wait: bool = True, timeout: int = 900, interval: int = 5) -> Runt
     )
 
 
-async def _call(serve, meta: Optional[dict] = None) -> types.CallToolResult:
+async def _call(serve, meta: dict | None = None) -> types.CallToolResult:
     """initialize -> tools/call through ``serve(read_stream, write_stream)``."""
     async with create_client_server_memory_streams() as (client_streams, server_streams):
         async with anyio.create_task_group() as tg:

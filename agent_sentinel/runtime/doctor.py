@@ -63,7 +63,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import partial
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from . import config as runtime_config
 from .config import ConfigError
@@ -119,7 +119,7 @@ def _holds_key_part(text: str, api_key: str) -> bool:
     return any(api_key[i : i + _KEY_WINDOW] in text for i in range(last))
 
 
-def format_line(result: CheckResult, api_key: Optional[str] = None) -> str:
+def format_line(result: CheckResult, api_key: str | None = None) -> str:
     status = "SKIP" if result.skipped else ("PASS" if result.ok else "FAIL")
     message = _printable(result.message)
     if api_key is not None and _holds_key_part(message, api_key):
@@ -228,7 +228,7 @@ class _Scan:
     runtime_owned: int = 0
     links_unchecked: int = 0
     outside_seen: set = field(default_factory=set)
-    limit: Optional[str] = None
+    limit: str | None = None
     findings: list[str] = field(default_factory=list)
 
 
@@ -260,8 +260,8 @@ def _search_file(
     needle: bytes,
     *,
     follow: bool,
-    max_bytes: Optional[int] = None,
-    scan: Optional[_Scan] = None,
+    max_bytes: int | None = None,
+    scan: _Scan | None = None,
 ) -> str:
     """``"match"``, ``"clean"`` or ``"large"``; OSError if it cannot be read.
 
@@ -571,14 +571,12 @@ _HTTP_DETAIL = re.compile(r"\(HTTP (\d{3})(?:, ([a-z0-9_]{1,64}))?\)")
 _UNREACHABLE = re.compile(r"unreachable \(([A-Za-z_][A-Za-z0-9_]{0,63})\)")
 
 
-def _find_exception(exc: BaseException, kind: type) -> Optional[BaseException]:
+def _find_exception(exc: BaseException, kind: type) -> BaseException | None:
     if isinstance(exc, kind):
         return exc
-    # anyio task groups wrap failures in (Base)ExceptionGroup; duck-typed so
-    # Python 3.10 (the exceptiongroup backport) is covered too.
-    inner = getattr(exc, "exceptions", None)
-    if isinstance(inner, tuple):
-        for item in inner:
+    # anyio task groups wrap failures in a BaseExceptionGroup.
+    if isinstance(exc, BaseExceptionGroup):
+        for item in exc.exceptions:
             found = _find_exception(item, kind)
             if found is not None:
                 return found
@@ -586,7 +584,7 @@ def _find_exception(exc: BaseException, kind: type) -> Optional[BaseException]:
 
 
 async def _list_tools(
-    proxy_config: Any, http_transport: Optional[httpx.AsyncBaseTransport]
+    proxy_config: Any, http_transport: httpx.AsyncBaseTransport | None
 ) -> None:
     import anyio
     from mcp import ClientSession
@@ -642,7 +640,7 @@ def _upstream_failure(exc: BaseException) -> str:
 
 
 def _check_upstream(
-    proxy_config: Any, http_transport: Optional[httpx.AsyncBaseTransport]
+    proxy_config: Any, http_transport: httpx.AsyncBaseTransport | None
 ) -> CheckResult:
     import anyio
 
@@ -662,9 +660,9 @@ def _run(
     path: str,
     *,
     offline: bool,
-    environ: Optional[Mapping[str, str]],
-    http_transport: Optional[httpx.AsyncBaseTransport],
-) -> tuple[list[CheckResult], Optional[str]]:
+    environ: Mapping[str, str] | None,
+    http_transport: httpx.AsyncBaseTransport | None,
+) -> tuple[list[CheckResult], str | None]:
     results: list[CheckResult] = []
     ok, doc = _check(
         results,
@@ -805,8 +803,8 @@ def _isolation_checks(
     )
     # The walk runs once: runtime-user-separate uses its ownership count and
     # key-not-in-workspace its findings.
-    scan: Optional[_Scan] = None
-    scan_error: Optional[CheckResult] = None
+    scan: _Scan | None = None
+    scan_error: CheckResult | None = None
     try:
         scan = _workspace_scan(workspace, api_key_file, api_key)
     except ConfigError as exc:
@@ -871,8 +869,8 @@ def run_checks(
     path: str,
     *,
     offline: bool = False,
-    environ: Optional[Mapping[str, str]] = None,
-    http_transport: Optional[httpx.AsyncBaseTransport] = None,
+    environ: Mapping[str, str] | None = None,
+    http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> list[CheckResult]:
     """The checks' results; a message holding part of the key is withheld."""
     results, api_key = _run(
@@ -891,11 +889,11 @@ def run_checks(
 
 def main(
     path: str,
-    out: Optional[Any] = None,
+    out: Any | None = None,
     *,
     offline: bool = False,
-    environ: Optional[Mapping[str, str]] = None,
-    http_transport: Optional[httpx.AsyncBaseTransport] = None,
+    environ: Mapping[str, str] | None = None,
+    http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> int:
     """Print one line per check; 0 if no check failed, else 1."""
     stream = out if out is not None else sys.stdout

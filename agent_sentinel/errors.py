@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Any
+from typing import Any
 import logging
 
 logger = logging.getLogger("agent_sentinel")
@@ -12,8 +12,8 @@ class AgentSentinelError(Exception):
     def __init__(
         self,
         message: str,
-        error_code: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        error_code: str | None = None,
+        details: dict[str, Any] | None = None,
         recoverable: bool = False,
     ):
         """
@@ -51,7 +51,7 @@ class BudgetExceededError(AgentSentinelError):
         spent: float,
         limit: float,
         budget_type: str = "action",
-        details: Optional[dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ):
         """
         Initialize budget exceeded error.
@@ -110,13 +110,13 @@ class PolicyViolationError(AgentSentinelError):
     def __init__(
         self,
         message: str,
-        policy_rule: Optional[str] = None,
-        action_name: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        policy_rule: str | None = None,
+        action_name: str | None = None,
+        details: dict[str, Any] | None = None,
         reason_code: str = "POLICY_VIOLATION",
-        retry_guidance: Optional[str] = None,
-        safe_alternatives: Optional[list[str]] = None,
-        retry_after_seconds: Optional[float] = None,
+        retry_guidance: str | None = None,
+        safe_alternatives: list[str] | None = None,
+        retry_after_seconds: float | None = None,
         recoverable: bool = False,
         error_code: str = "POLICY_VIOLATION",
     ):
@@ -177,9 +177,9 @@ class PolicyViolationError(AgentSentinelError):
 
 def _default_retry_guidance(
     reason_code: str,
-    action_name: Optional[str] = None,
-    safe_alternatives: Optional[list[str]] = None,
-    retry_after_seconds: Optional[float] = None,
+    action_name: str | None = None,
+    safe_alternatives: list[str] | None = None,
+    retry_after_seconds: float | None = None,
 ) -> str:
     """
     Build agent-readable guidance for a block that has none supplied.
@@ -279,8 +279,8 @@ class PolicyNotConfiguredError(PolicyViolationError):
             "(PolicyEngine.configure / load_from_yaml / enable_remote_sync), "
             "or set enforcement mode to 'fail_open' to permit unpoliced actions."
         ),
-        action_name: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        action_name: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         details = details or {}
         details["enforcement_mode"] = "fail_closed"
@@ -324,10 +324,10 @@ class NoPolicyForWriteError(PolicyViolationError):
 
     def __init__(
         self,
-        message: Optional[str] = None,
-        action_name: Optional[str] = None,
-        impact: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        message: str | None = None,
+        action_name: str | None = None,
+        impact: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         details = details or {}
         details["enforcement_mode"] = "fail_closed_writes"
@@ -377,13 +377,13 @@ class RemediationPayload:
     def __init__(
         self,
         reason_code: str,
-        missing_requirements: Optional[list[str]] = None,
-        required_prior_actions: Optional[list[str]] = None,
-        retry_guidance: Optional[str] = None,
-        safe_alternatives: Optional[list[str]] = None,
-        stale_evidence: Optional[list[str]] = None,
-        argument_violations: Optional[list[str]] = None,
-        retry_after_seconds: Optional[float] = None,
+        missing_requirements: list[str] | None = None,
+        required_prior_actions: list[str] | None = None,
+        retry_guidance: str | None = None,
+        safe_alternatives: list[str] | None = None,
+        stale_evidence: list[str] | None = None,
+        argument_violations: list[str] | None = None,
+        retry_after_seconds: float | None = None,
     ):
         self.reason_code = reason_code
         self.missing_requirements = missing_requirements or []
@@ -428,13 +428,13 @@ class EvidenceViolationError(PolicyViolationError):
     def __init__(
         self,
         message: str,
-        action_name: Optional[str] = None,
-        missing_requirements: Optional[list[str]] = None,
-        required_prior_actions: Optional[list[str]] = None,
-        stale_evidence: Optional[list[str]] = None,
-        argument_violations: Optional[list[str]] = None,
-        safe_alternatives: Optional[list[str]] = None,
-        retry_guidance: Optional[str] = None,
+        action_name: str | None = None,
+        missing_requirements: list[str] | None = None,
+        required_prior_actions: list[str] | None = None,
+        stale_evidence: list[str] | None = None,
+        argument_violations: list[str] | None = None,
+        safe_alternatives: list[str] | None = None,
+        retry_guidance: str | None = None,
     ):
         # Determine reason code
         reason_code = "MISSING_EVIDENCE"
@@ -484,10 +484,10 @@ class ReplayDivergenceError(AgentSentinelError):
     def __init__(
         self,
         message: str,
-        action_name: Optional[str] = None,
-        expected_inputs: Optional[Any] = None,
-        actual_inputs: Optional[Any] = None,
-        details: Optional[dict[str, Any]] = None,
+        action_name: str | None = None,
+        expected_inputs: Any | None = None,
+        actual_inputs: Any | None = None,
+        details: dict[str, Any] | None = None,
     ):
         """
         Initialize replay divergence error.
@@ -520,9 +520,9 @@ class NetworkError(AgentSentinelError):
     def __init__(
         self,
         message: str,
-        status_code: Optional[int] = None,
-        endpoint: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        status_code: int | None = None,
+        endpoint: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         """
         Initialize network error.
@@ -556,9 +556,9 @@ class SyncError(AgentSentinelError):
     def __init__(
         self,
         message: str,
-        batch_size: Optional[int] = None,
-        retry_count: Optional[int] = None,
-        details: Optional[dict[str, Any]] = None,
+        batch_size: int | None = None,
+        retry_count: int | None = None,
+        details: dict[str, Any] | None = None,
     ):
         """
         Initialize sync error.
@@ -588,9 +588,9 @@ class TimeoutError(AgentSentinelError):
     def __init__(
         self,
         message: str,
-        timeout_seconds: Optional[float] = None,
-        operation: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        timeout_seconds: float | None = None,
+        operation: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         """
         Initialize timeout error.
@@ -620,9 +620,9 @@ class AgentKilledError(AgentSentinelError):
     def __init__(
         self,
         message: str,
-        target_type: Optional[str] = None,
-        target_id: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         details = details or {}
         if target_type:
@@ -655,9 +655,9 @@ class KillSwitchUnavailableError(AgentKilledError):
             "Kill switch could not be checked and enforcement mode is "
             "'fail_closed', so the action was blocked."
         ),
-        target_type: Optional[str] = None,
-        target_id: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         details = details or {}
         details["reason_code"] = "KILL_SWITCH_UNAVAILABLE"
@@ -675,8 +675,8 @@ class ConfigurationError(AgentSentinelError):
     def __init__(
         self,
         message: str,
-        config_key: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None,
+        config_key: str | None = None,
+        details: dict[str, Any] | None = None,
     ):
         """
         Initialize configuration error.

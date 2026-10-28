@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, List, Optional, Pattern, Tuple
+from typing import Any
+from re import Pattern
 
 LEDGER_INPUTS_ENV = "AGENT_SENTINEL_LEDGER_INPUTS"
 
@@ -33,7 +34,7 @@ _SENSITIVE_KEY = re.compile(
 
 # Common secret value shapes, checked when the key itself looks innocuous
 # (e.g. a "notes" field that happens to contain a pasted token).
-_VALUE_PATTERNS: List[Tuple[str, Pattern[str]]] = [
+_VALUE_PATTERNS: list[tuple[str, Pattern[str]]] = [
     ("stripe_key", re.compile(r"sk_live_[A-Za-z0-9]+")),
     ("openai_key", re.compile(r"sk-[A-Za-z0-9]{10,}")),
     ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}")),
@@ -53,14 +54,14 @@ def ledger_input_capture_enabled() -> bool:
     return os.getenv(LEDGER_INPUTS_ENV, "").strip().lower() != "none"
 
 
-def _match_value_kind(text: str) -> Optional[str]:
+def _match_value_kind(text: str) -> str | None:
     for kind, pattern in _VALUE_PATTERNS:
         if pattern.search(text):
             return kind
     return None
 
 
-def _truncate(text: str, max_bytes: int) -> Tuple[str, bool]:
+def _truncate(text: str, max_bytes: int) -> tuple[str, bool]:
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
         return text, False
@@ -69,7 +70,7 @@ def _truncate(text: str, max_bytes: int) -> Tuple[str, bool]:
     return f"{truncated}...[truncated {overflow} bytes]", True
 
 
-def _redact_value(value: Any, max_bytes: int, key_redacted: bool) -> Tuple[Any, bool]:
+def _redact_value(value: Any, max_bytes: int, key_redacted: bool) -> tuple[Any, bool]:
     if key_redacted:
         return (None if value is None else "[redacted:key]"), value is not None
 
@@ -94,8 +95,8 @@ def _redact_value(value: Any, max_bytes: int, key_redacted: bool) -> Tuple[Any, 
     return value, False
 
 
-def _redact_dict(mapping: Dict[str, Any], max_bytes: int) -> Tuple[Dict[str, Any], bool]:
-    out: Dict[str, Any] = {}
+def _redact_dict(mapping: dict[str, Any], max_bytes: int) -> tuple[dict[str, Any], bool]:
+    out: dict[str, Any] = {}
     changed = False
     for key, value in mapping.items():
         key_redacted = isinstance(key, str) and bool(_SENSITIVE_KEY.search(key))
@@ -106,11 +107,11 @@ def _redact_dict(mapping: Dict[str, Any], max_bytes: int) -> Tuple[Dict[str, Any
 
 
 def redact_inputs(
-    args: Tuple[Any, ...],
-    kwargs: Dict[str, Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
     *,
     max_bytes: int = DEFAULT_MAX_BYTES,
-) -> Tuple[Tuple[Any, ...], Dict[str, Any], bool]:
+) -> tuple[tuple[Any, ...], dict[str, Any], bool]:
     """
     Redact secrets out of tool-call args/kwargs before they're persisted.
 
@@ -125,7 +126,7 @@ def redact_inputs(
     True if anything was replaced or truncated.
     """
     changed = False
-    new_args: List[Any] = []
+    new_args: list[Any] = []
     for value in args or ():
         new_value, was_changed = _redact_value(value, max_bytes, key_redacted=False)
         new_args.append(new_value)

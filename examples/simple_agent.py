@@ -278,7 +278,7 @@ async def main():
     print(f"📁 Ledger location: {ledger_path}")
     print()
     
-    with open(ledger_path, "r") as f:
+    with open(ledger_path) as f:
         lines = f.readlines()
         print(f"✅ Found {len(lines)} entries in ledger")
         print()

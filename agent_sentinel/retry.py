@@ -12,9 +12,10 @@ from __future__ import annotations
 import logging
 import time
 import random
-from typing import Callable, TypeVar, Optional, Any
+from typing import TypeVar
+from collections.abc import Callable
 from functools import wraps
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 from .errors import AgentSentinelError, NetworkError, SyncError, TimeoutError
 
@@ -33,7 +34,7 @@ class RetryConfig:
         max_delay: float = 60.0,
         exponential_base: float = 2.0,
         jitter: bool = True,
-        retryable_exceptions: Optional[list[type[Exception]]] = None,
+        retryable_exceptions: list[type[Exception]] | None = None,
     ):
         """
         Initialize retry configuration.
@@ -113,7 +114,7 @@ class CircuitBreaker:
         
         self.state = self.CLOSED
         self.failure_count = 0
-        self.last_failure_time: Optional[datetime] = None
+        self.last_failure_time: datetime | None = None
     
     def call(self, func: Callable[..., T], *args, **kwargs) -> T:
         """
@@ -157,7 +158,7 @@ class CircuitBreaker:
         """Check if enough time has passed to attempt recovery."""
         if self.last_failure_time is None:
             return True
-        elapsed = (datetime.now(timezone.utc) - self.last_failure_time).total_seconds()
+        elapsed = (datetime.now(UTC) - self.last_failure_time).total_seconds()
         return elapsed >= self.recovery_timeout
     
     def _on_success(self) -> None:
@@ -171,7 +172,7 @@ class CircuitBreaker:
     def _on_failure(self) -> None:
         """Handle failed call."""
         self.failure_count += 1
-        self.last_failure_time = datetime.now(timezone.utc)
+        self.last_failure_time = datetime.now(UTC)
         
         if self.failure_count >= self.failure_threshold:
             self.state = self.OPEN
@@ -185,8 +186,8 @@ class CircuitBreaker:
 
 
 def with_retry(
-    config: Optional[RetryConfig] = None,
-    on_retry: Optional[Callable[[int, Exception], None]] = None,
+    config: RetryConfig | None = None,
+    on_retry: Callable[[int, Exception], None] | None = None,
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
     Decorator to retry a function with exponential backoff.
@@ -209,7 +210,7 @@ def with_retry(
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @wraps(func)
         def wrapper(*args, **kwargs) -> T:
-            last_exception: Optional[Exception] = None
+            last_exception: Exception | None = None
             
             for attempt in range(config.max_attempts):
                 try:

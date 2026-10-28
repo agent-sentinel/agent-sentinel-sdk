@@ -13,7 +13,6 @@ platform.
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from .errors import ConfigurationError
 
@@ -23,11 +22,11 @@ PLATFORM_URL_ENV_VARS = ("AGENT_SENTINEL_PLATFORM_URL", "AGENT_SENTINEL_URL")
 API_KEY_ENV_VAR = "AGENT_SENTINEL_API_KEY"
 
 
-def _clean_url(value: Optional[str]) -> str:
+def _clean_url(value: str | None) -> str:
     return (value or "").strip().rstrip("/")
 
 
-def resolve_platform_url(explicit: Optional[str] = None) -> str:
+def resolve_platform_url(explicit: str | None = None) -> str:
     """Return the platform base URL (no trailing slash).
 
     Precedence: ``explicit`` > ``AGENT_SENTINEL_PLATFORM_URL`` >
@@ -43,7 +42,7 @@ def resolve_platform_url(explicit: Optional[str] = None) -> str:
     return DEFAULT_PLATFORM_URL
 
 
-def resolve_api_token(explicit: Optional[str] = None) -> str:
+def resolve_api_token(explicit: str | None = None) -> str:
     """Return ``explicit`` if given, else ``AGENT_SENTINEL_API_KEY``.
 
     An explicitly passed value (even an empty string) is returned unchanged,

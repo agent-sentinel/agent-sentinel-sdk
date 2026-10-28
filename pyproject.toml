@@ -4,27 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentsentinel-sdk"
-version = "0.6.0"
+version = "0.6.1"
 description = "Runtime authority and control for autonomous AI agents"
 readme = "README.md"
 authors = [
   { name = "Agent Sentinel Team", email = "hello@agentsentinel.dev" },
 ]
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Monitoring",
 ]
-keywords = ["agents", "llm", "control", "safety", "governance", "ai", "authorization", "circuit-breaker"]
+keywords = ["agents", "llm", "control", "safety", "governance", "ai", "authorization", "circuit-breaker", "mcp", "model-context-protocol", "runtime-authority"]
 
 # Core dependencies
 dependencies = [
@@ -39,9 +39,8 @@ remote = [
 ]
 
 # agentsentinel-mcp: stdio MCP proxy to the platform's /mcp endpoint (t25).
-# The official MCP library needs Python 3.10+.
 mcp = [
-    "mcp>=1.26,<2; python_version >= '3.10'",
+    "mcp>=1.26,<2",
     "httpx>=0.28.0",
 ]
 
@@ -81,9 +80,8 @@ all = [
 ]
 
 dev = [
-    "pytest>=9.0.3; python_version >= '3.10'",  # 9.0.3 fixes a security advisory; 9.x needs 3.10+
-    "pytest>=7.0.0,<9.0.0; python_version < '3.10'",  # keep Python 3.9 dev installs working
-    "pytest-asyncio>=0.21.0",  # Compatible with Python 3.9+
+    "pytest>=9.0.3",  # 9.0.3 fixes a security advisory
+    "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",  # Code coverage reporting
     "ruff>=0.1.0",  # Modern replacement for black, isort, flake8
     "mypy>=1.0.0",  # Type checking
@@ -96,6 +94,8 @@ agentsentinel-runtime = "agent_sentinel.runtime.cli:main"
 
 [project.urls]
 "Homepage" = "https://agentsentinel.dev"
+"Documentation" = "https://docs.agentsentinel.dev"
+"Changelog" = "https://github.com/agent-sentinel/agent-sentinel-sdk/blob/main/CHANGELOG.md"
 "Source" = "https://github.com/agent-sentinel/agent-sentinel-sdk"
 "Tracker" = "https://github.com/agent-sentinel/agent-sentinel-sdk/issues"
 
@@ -131,7 +131,7 @@ directory = "htmlcov"
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = [
@@ -154,15 +154,14 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3; python_version >= '3.10'",
-    "pytest>=7.0.0,<9.0.0; python_version < '3.10'",
+    "pytest>=9.0.3",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "httpx>=0.24.0",

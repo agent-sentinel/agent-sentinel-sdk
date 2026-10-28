@@ -5,6 +5,43 @@ All notable changes to AgentSentinel SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-10-28
+
+Raises the minimum supported Python to 3.11 (see **Changed**), rewrites the PyPI
+README and refreshes package metadata. No change to the SDK's runtime behaviour
+apart from the two timestamp fields noted below.
+
+### Changed
+
+- **Python 3.11 or newer is now required** (`requires-python = ">=3.11"`). 3.9
+  reached end of life in October 2025 and 3.10 does in October 2026. pip uses
+  the `Requires-Python` metadata, so environments on 3.9 or 3.10 keep resolving
+  0.6.0 and earlier instead of receiving a package they cannot import. Python
+  3.14 is now a declared and CI-tested version.
+- Codebase moved to 3.11+ idioms: built-in generics and `X | None` instead of
+  `typing.Optional`/`List`/`Dict`, `collections.abc` imports, `datetime.UTC`,
+  native `BaseExceptionGroup` handling in `agentsentinel-mcp` and
+  `agentsentinel-runtime doctor` (the duck-typed 3.10 backport path is gone), and
+  `StrEnum` for the string enums (`ApprovalStatus`, `ApprovalPriority`,
+  `RiskLevel`, `ComplianceLevel`, `InterventionType`, `InterventionOutcome`).
+  Their `.value`, equality with plain strings and JSON form are unchanged;
+  `str(member)` and f-strings now give the value (`"pending"`) rather than
+  `"ApprovalStatus.PENDING"`.
+- `ApprovalRequest.created_at` and `ApprovalResponse.approved_at` (in
+  `agent_sentinel.compliance`) are now timezone-aware UTC (`datetime.now(UTC)`)
+  instead of naive `datetime.utcnow()`, which is deprecated from Python 3.12.
+  Their serialized form carries an explicit `+00:00` offset.
+- The `[mcp]` extra and the dev dependency groups no longer carry Python 3.9/3.10
+  environment markers.
+- **The PyPI README is rewritten** for what the SDK is today: it leads with the
+  runtime-authority positioning, documents `agentsentinel-mcp` and
+  `agentsentinel-runtime` (approvals and `doctor` included), lists every install
+  extra, lists the full `@guarded_action` parameters, notes the hosted platform
+  URL default, and drops the emoji headings and a stale escape-hatch note.
+- Package metadata: added Documentation and Changelog project URLs, the MIT
+  license classifier, and `mcp` / `model-context-protocol` / `runtime-authority`
+  keywords.
+
 ## [0.6.0] - 2026-10-27
 
 No breaking changes for existing SDK or `agentsentinel-mcp` users.

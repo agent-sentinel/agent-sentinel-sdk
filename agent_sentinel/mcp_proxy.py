@@ -16,7 +16,7 @@ Configuration (environment):
   unless the host is ``localhost`` or ``127.0.0.1``.
 - ``AGENT_SENTINEL_HARNESS`` (optional): sent upstream as ``X-Sentinel-Harness``.
 
-Needs the optional extra: ``pip install "agentsentinel-sdk[mcp]"`` (Python 3.10+).
+Needs the optional extra: ``pip install "agentsentinel-sdk[mcp]"``.
 This module is never imported by ``agent_sentinel`` itself.
 """
 
@@ -29,7 +29,7 @@ import re
 import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 try:
@@ -43,7 +43,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError(
         "agentsentinel-mcp needs the optional MCP extra: "
-        'pip install "agentsentinel-sdk[mcp]" (Python 3.10+)'
+        'pip install "agentsentinel-sdk[mcp]"'
     ) from exc
 
 from . import __version__
@@ -89,7 +89,7 @@ class ProxyConfig:
 
     url: str
     api_key: str = field(repr=False)
-    harness: Optional[str] = None
+    harness: str | None = None
 
     def headers(self) -> dict[str, str]:
         headers = {
@@ -161,7 +161,7 @@ def check_base_url(value: str, name: str) -> str:
     return base
 
 
-def check_harness(value: Optional[str], name: str) -> Optional[str]:
+def check_harness(value: str | None, name: str) -> str | None:
     """Return the stripped harness name, or None when empty."""
     harness = (value or "").strip() or None
     if harness is not None and not _HEADER_CHARS.match(harness):
@@ -214,7 +214,7 @@ class _UpstreamErrorTransport(httpx.AsyncBaseTransport):
         await self._inner.aclose()
 
 
-def _reason_code(body: bytes) -> Optional[str]:
+def _reason_code(body: bytes) -> str | None:
     try:
         data = json.loads(body)
     except ValueError:
@@ -253,14 +253,12 @@ def _error_response(request: httpx.Request, message: str) -> httpx.Response:
     )
 
 
-def _find_mcp_error(exc: BaseException) -> Optional[McpError]:
+def _find_mcp_error(exc: BaseException) -> McpError | None:
     if isinstance(exc, McpError):
         return exc
-    # anyio task groups wrap failures in (Base)ExceptionGroup; duck-typed so
-    # Python 3.10 (the exceptiongroup backport) is covered too.
-    inner_exceptions = getattr(exc, "exceptions", None)
-    if isinstance(inner_exceptions, tuple):
-        for inner in inner_exceptions:
+    # anyio task groups wrap failures in a BaseExceptionGroup.
+    if isinstance(exc, BaseExceptionGroup):
+        for inner in exc.exceptions:
             found = _find_mcp_error(inner)
             if found is not None:
                 return found
@@ -289,14 +287,14 @@ class _Upstream:
         self,
         config: ProxyConfig,
         task_group: TaskGroup,
-        http_transport: Optional[httpx.AsyncBaseTransport],
+        http_transport: httpx.AsyncBaseTransport | None,
     ) -> None:
         self._config = config
         self._task_group = task_group
         self._http_transport = http_transport
         self._lock = anyio.Lock()
         self._stop = anyio.Event()
-        self._session: Optional[ClientSession] = None
+        self._session: ClientSession | None = None
 
     async def session(self) -> ClientSession:
         async with self._lock:
@@ -316,7 +314,7 @@ class _Upstream:
             follow_redirects=False,
         )
         started = False
-        session: Optional[ClientSession] = None
+        session: ClientSession | None = None
         try:
             async with http_client, streamable_http_client(
                 self._config.url, http_client=http_client
@@ -337,7 +335,7 @@ class _Upstream:
 
 
 def build_server(
-    upstream: _Upstream, approval_waiter: Optional[ApprovalWaiter] = None
+    upstream: _Upstream, approval_waiter: ApprovalWaiter | None = None
 ) -> Server[Any, Any]:
     """The stdio-facing server: tools/list and tools/call go upstream verbatim.
 
@@ -396,8 +394,8 @@ async def serve(
     read_stream: Any,
     write_stream: Any,
     *,
-    http_transport: Optional[httpx.AsyncBaseTransport] = None,
-    approval_waiter: Optional[ApprovalWaiter] = None,
+    http_transport: httpx.AsyncBaseTransport | None = None,
+    approval_waiter: ApprovalWaiter | None = None,
 ) -> None:
     """Run the proxy over the given MCP streams until the client disconnects.
 

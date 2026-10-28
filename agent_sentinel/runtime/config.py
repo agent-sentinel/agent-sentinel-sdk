@@ -31,7 +31,7 @@ import os
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -85,7 +85,7 @@ class RuntimeConfig:
     url: str
     workspace: str
     api_key_file: str
-    harness: Optional[str]
+    harness: str | None
     approvals: ApprovalsConfig
     api_key: str = field(repr=False)
 
@@ -109,7 +109,7 @@ class RuntimeConfig:
         }
 
 
-def resolve_config_path(arg: Optional[str], environ: Mapping[str, str]) -> str:
+def resolve_config_path(arg: str | None, environ: Mapping[str, str]) -> str:
     """``--config``, else ``$AGENT_SENTINEL_RUNTIME_CONFIG``, else the default."""
     if arg:
         return arg
@@ -134,7 +134,7 @@ class ConfigDocument(dict):
     identity: tuple[int, int] = (0, 0)
 
 
-def _opened_location(fd: int, path: str, st: os.stat_result) -> Optional[str]:
+def _opened_location(fd: int, path: str, st: os.stat_result) -> str | None:
     """The resolved path ``fd`` was opened at, or None if it no longer matches."""
     try:
         opened = os.readlink(f"/proc/self/fd/{fd}")
@@ -460,7 +460,7 @@ def check_url(doc: Mapping[str, Any]) -> str:
     return mcp_proxy.check_base_url(_optional_str(doc, "url"), "url")
 
 
-def check_harness(doc: Mapping[str, Any]) -> Optional[str]:
+def check_harness(doc: Mapping[str, Any]) -> str | None:
     # A key pasted here is refused by ``check_key_not_in_settings``, which
     # compares against the real key rather than guessing from its shape.
     return mcp_proxy.check_harness(_optional_str(doc, "harness"), "harness")

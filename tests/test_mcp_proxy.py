@@ -1,10 +1,10 @@
 """
 Tests for the ``agentsentinel-mcp`` stdio proxy (agent_sentinel.mcp_proxy).
 
-The proxy needs the optional ``mcp`` extra (Python 3.10+). Every proxy test
-calls ``pytest.importorskip("mcp")`` via the ``_require_mcp`` fixture, so the
-3.9 floor job skips them; the import-isolation test at the bottom runs
-everywhere, because importing ``agent_sentinel`` must never need ``mcp``.
+The proxy needs the optional ``mcp`` extra. Every proxy test calls
+``pytest.importorskip("mcp")`` via the ``_require_mcp`` fixture, so a core-only
+install skips them; the import-isolation test at the bottom runs everywhere,
+because importing ``agent_sentinel`` must never need ``mcp``.
 
 The upstream is an in-process fake of the platform's stateless ``/mcp``:
 behind ``httpx.MockTransport`` for the in-process tests, and served by uvicorn
@@ -350,6 +350,9 @@ def test_disallowed_url_exits_nonzero_without_the_key(monkeypatch, capsys, url):
 @pytest.mark.usefixtures("_require_mcp")
 def test_missing_key_exits_nonzero_as_a_process():
     env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SENTINEL_")}
+    # Optional LangChain emits this third-party compatibility warning on 3.14.
+    # Keep exact assertions on the proxy's own diagnostic below.
+    env["PYTHONWARNINGS"] = "ignore:Core Pydantic V1 functionality:UserWarning:langchain_core.utils.pydantic"
     proc = subprocess.run(
         [sys.executable, "-m", "agent_sentinel.mcp_proxy"],
         env=env,

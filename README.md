@@ -1,79 +1,61 @@
-# AgentSentinel SDK
+# Agent Sentinel SDK
 
-> **The operational circuit breaker for autonomous agents**
+[![PyPI](https://img.shields.io/pypi/v/agentsentinel-sdk)](https://pypi.org/project/agentsentinel-sdk/)
+[![Python](https://img.shields.io/pypi/pyversions/agentsentinel-sdk)](https://pypi.org/project/agentsentinel-sdk/)
+[![License: MIT](https://img.shields.io/pypi/l/agentsentinel-sdk)](LICENSE)
 
-Runtime authority and control for autonomous AI agents. Decide whether your agents are allowed to act — before they do.
+**The runtime authority for AI agents.** Every tool call your agent makes is
+authorized before it runs, budgets are reserved before execution, and what
+happened is recorded in a ledger you can verify.
 
-## 🎯 What is AgentSentinel?
+[Documentation](https://docs.agentsentinel.dev) ·
+[Console](https://console.agentsentinel.dev) ·
+[Website](https://agentsentinel.dev) ·
+[Changelog](CHANGELOG.md)
 
-AgentSentinel gives developers and organizations active control over the financial, logical, and compliance risks of autonomous agents in production.
+## What it does
 
-**We are not:**
-- A logging tool (that's a camera)
-- An analytics dashboard (that's a report)
-- An observability platform (that's hindsight)
+Observability tells you what happened. Agent Sentinel decides what is allowed
+to happen, before it does. Two ways to put it in front of your agent:
 
-**We are:**
-- The brakes on the car
-- The circuit breaker in the system
-- The authorization layer between intent and action
+- **In-process, with the SDK.** Decorate functions with `@guarded_action`.
+  Policy, budgets, approvals, loop protection and PII/moderation guardrails run
+  before the function body does. No approval, no execution.
+- **In front of every MCP tool call.** `agentsentinel-mcp` and
+  `agentsentinel-runtime` connect Claude Code, Cursor or any MCP client to the
+  hosted gateway, so each `tools/call` is authorized first and the model never
+  holds the credential.
 
-> **Core Value:** AgentSentinel exists to decide whether an autonomous system is allowed to act — before it does.
+What you get:
 
-## ✨ The Three Pillars
+- Hard budget caps per action, run and session, reserved before execution
+- Deny lists, allow lists, rate limits and policy-as-YAML
+- Human approval workflows for sensitive actions
+- Fail-closed by default for writes (since 0.4.0)
+- Secrets redacted from ledger inputs before they are written or uploaded
+- A local JSONL ledger, plus remote sync to the hosted platform, where ledger
+  rows are Ed25519-signed and the chain can be verified from the console or API
+- Remediation on every block (retry guidance, safe alternatives) so an agent can
+  self-correct
 
-### 1. Active Safety 🛡️
-Runtime enforcement that overrides agent intent. Every check happens BEFORE execution.
-
-- ⚡ Budget enforcement (hard caps on cost per action, run, session)
-- 🚫 Action bans (deny list prevents execution)
-- ✅ Action allowlists (restrict to approved actions only)
-- ⏱️ Rate limiting (time-windowed execution limits)
-- 🛡️ Fail-safe design (never fails open without authorization)
-
-### 2. Governance 📋
-Complete authority over what happened, when, and why.
-
-- 📝 Immutable execution ledger
-- 💰 Per-action, per-run, per-session cost tracking
-- 🔄 Replay mode for deterministic testing
-- 📊 Decision rationale and data lineage
-- 🇪🇺 EU AI Act Article 14 compliance metadata
-
-### 3. Operations ⚙️
-The bridge between autonomous agents and human authority.
-
-- 👤 Human-in-the-loop approval workflows
-- 📋 Policy engine with YAML configuration
-- 🔌 Remote policy synchronization
-- 📡 Real-time intervention tracking
-- ⏸️ Interruptible execution with resumable authority
-
-## 📦 Installation
+## Installation
 
 ```bash
-# Basic installation
-pip install agentsentinel-sdk
-
-# With remote sync to platform
-pip install agentsentinel-sdk[remote]
-
-# With LLM integrations (OpenAI, Anthropic, Grok, Gemini)
-pip install agentsentinel-sdk[llm]
-
-# With framework integrations (LangChain, CrewAI, MCP)
-pip install agentsentinel-sdk[integrations]
-
-# With everything
-pip install agentsentinel-sdk[all]
-
-# Development installation
-git clone https://github.com/agent-sentinel/agent-sentinel-sdk.git
-cd agent-sentinel-sdk
-uv sync
+pip install agentsentinel-sdk                  # core: decorator, policy, local ledger
+pip install "agentsentinel-sdk[remote]"        # sync to the hosted platform
+pip install "agentsentinel-sdk[mcp]"           # agentsentinel-mcp and agentsentinel-runtime
+pip install "agentsentinel-sdk[langchain]"     # LangChain callbacks
+pip install "agentsentinel-sdk[crewai]"        # CrewAI callbacks
+pip install "agentsentinel-sdk[llm]"           # OpenAI, Anthropic, Grok, Gemini helpers
+pip install "agentsentinel-sdk[integrations]"  # all framework integrations
+pip install "agentsentinel-sdk[all]"           # everything
 ```
 
-## 🚀 Quick Start
+The package needs Python 3.11+. For development, work from
+`packages/agent-sentinel-sdk` in the
+[monorepo](https://github.com/agent-sentinel/agent-sentinel) with `uv sync`.
+
+## Quick Start
 
 ### Basic Usage
 
@@ -133,7 +115,74 @@ ctx = Context(user_id=123, session="abc", connection=socket.socket())
 process_data(ctx, {"value": 42})
 ```
 
-## 📊 Log Format
+## MCP authority
+
+Every MCP `tools/call` goes through the gateway's authorize decision before the
+tool executes (allow, deny or require approval), and the result is recorded as a
+ledger row. Two stdio entry points ship in the `[mcp]` extra:
+
+### `agentsentinel-mcp`
+
+A stdio MCP server for MCP-native harnesses such as Claude Code and Cursor. It
+answers `initialize` locally and forwards `tools/list` and `tools/call` to the
+platform's `/mcp` endpoint with an agent-bound API key, so the harness gets
+governed tools and the model never sees a credential. Results pass through
+unchanged, including `isError` and `structuredContent.reason_code` on refusals.
+
+```json
+{
+  "mcpServers": {
+    "agentsentinel": {
+      "command": "agentsentinel-mcp",
+      "env": {
+        "AGENT_SENTINEL_API_KEY": "<agent-bound API key>",
+        "AGENT_SENTINEL_HARNESS": "claude-code"
+      }
+    }
+  }
+}
+```
+
+Put this in `.mcp.json` for Claude Code or `.cursor/mcp.json` for Cursor. The
+file then holds the key, so keep it out of version control, or use
+`agentsentinel-runtime` below to keep the key out of the workspace entirely.
+
+- `AGENT_SENTINEL_API_KEY` (required) must be an agent-bound key.
+- `AGENT_SENTINEL_URL` (optional) overrides the hosted platform URL for
+  self-hosted or staging; the proxy targets `<url>/mcp`. `https` is required
+  unless the host is `localhost` or `127.0.0.1`.
+- `AGENT_SENTINEL_HARNESS` (optional) is sent as `X-Sentinel-Harness`.
+
+A missing key or a disallowed URL exits non-zero with a one-line message on
+stderr. The key is only ever sent in the upstream `Authorization` header and
+never appears in output, logs or MCP messages. Upstream 401/403 or transport
+failures surface as an MCP error (`tools/list`) or an `isError` tool result
+(`tools/call`). See the
+[Claude Code](https://docs.agentsentinel.dev/ai-tools/claude-code) and
+[Cursor](https://docs.agentsentinel.dev/ai-tools/cursor) guides.
+
+### `agentsentinel-runtime` (0.5+)
+
+Serves the same stdio proxy from one validated `runtime.yaml` (`url`,
+`workspace`, `api_key_file`, `harness`, `approvals`), reading the key from a file
+**outside the model's workspace**. It is outbound-only. Subcommands: `run`,
+`config` and `doctor`.
+
+- **Approvals (0.6+).** With `approvals.wait: true`, a `tools/call` that the
+  platform answers with `require_approval` is held while the runtime polls the
+  approval outbound with the same key, then retried once if approved. Rejected,
+  expired, cancelled and info-requested outcomes return a clear tool error; a
+  wait that times out does not cancel the approval.
+- **`agentsentinel-runtime doctor` (0.6+)** checks that the key is out of the
+  model's reach: key and config file location, ownership and permissions, a
+  bounded scan of the workspace for the key's bytes, known harness config
+  files, the environment, and upstream reachability (`--offline` skips it). It
+  never passes what it cannot prove, for example when the runtime runs as root or
+  as the user that owns or can write the workspace.
+
+`agent_sentinel.mcp` remains the client for the legacy REST facade.
+
+## Log Format
 
 Logs are written as JSON Lines (`.jsonl`) to `.agent-sentinel/ledger.jsonl`:
 
@@ -171,7 +220,7 @@ Logs are written as JSON Lines (`.jsonl`) to `.agent-sentinel/ledger.jsonl`:
 - `payload.inputs`: Function arguments (args and kwargs)
 - `payload.outputs`: Return value (on success) or error message (on failure)
 
-## 🎨 Advanced Usage
+## Advanced Usage
 
 ### Budget Enforcement
 
@@ -262,7 +311,9 @@ PolicyEngine.configure(
 ```python
 from agent_sentinel import enable_remote_sync, flush_and_stop
 
-# Start background sync to the hosted platform
+# Start background sync to the hosted platform. The URL defaults to the hosted
+# platform (0.5+); set AGENT_SENTINEL_PLATFORM_URL to target a self-hosted or
+# staging deployment.
 sync = enable_remote_sync(
     api_token="your-api-key",  # or set AGENT_SENTINEL_API_KEY
     flush_interval=10.0,  # Upload every 10 seconds
@@ -398,9 +449,9 @@ errors = [e for e in entries if e["outcome"] == "error"]
 print(f"Found {len(errors)} errors")
 ```
 
-## 🔧 API Reference
+## API Reference
 
-### `@guarded_action(name=None, cost_usd=0.0, tags=None)`
+### `@guarded_action(name=None, cost_usd=0.0, tags=None, ...)`
 
 Decorator to wrap a function with telemetry and cost tracking.
 
@@ -408,6 +459,12 @@ Decorator to wrap a function with telemetry and cost tracking.
 - `name` (str, optional): Name for the action. Defaults to function name.
 - `cost_usd` (float, optional): Cost in USD for this action. Default: 0.0
 - `tags` (list[str], optional): Tags for categorization. Default: []
+- `requires_human_approval` (bool, optional): Hold the call until a human
+  approves it. `approval_description` customizes what the approver sees.
+- `idempotency_key` / `idempotency_ttl_seconds` (optional): Replay a prior
+  result instead of running a duplicate side effect.
+- `agent_id`, `task_id`, `mission_id` (str, optional): Attribution for the
+  ledger and platform.
 - `impact` (`"read"` | `"low"` | `"medium"` | `"high"`, optional): Declared
   consequentiality of the action. Default: `"medium"`. Sent to the platform
   in the ledger entry and used by the `fail_closed_writes` enforcement mode
@@ -489,9 +546,9 @@ PolicyEngine.set_enforcement_mode("fail_open")     # or AGENT_SENTINEL_ENFORCEME
 ```
 
 **Escape hatch:** set `fail_open` explicitly (env var or
-`set_enforcement_mode`) to restore the exact pre-0.4 behaviour — an
-unconfigured engine permits every action regardless of declared impact —
-for one more minor version.
+`set_enforcement_mode`) to restore the exact pre-0.4 behaviour: an
+unconfigured engine permits every action regardless of declared impact. It
+exists for migrations, not as a recommended mode.
 
 ```python
 PolicyEngine.set_enforcement_mode("fail_closed")   # or AGENT_SENTINEL_ENFORCEMENT=fail_closed
@@ -626,7 +683,7 @@ Ledger.record(
 )
 ```
 
-## 🎯 Use Cases
+## Use Cases
 
 ### 1. LLM Agent Monitoring
 
@@ -666,7 +723,7 @@ def execute_task(task: str) -> dict:
     return {"status": "done", "task": task}
 ```
 
-## 🔌 Framework Integrations
+## Framework Integrations
 
 AgentSentinel provides robust integrations with popular AI frameworks, featuring active policy enforcement and intervention tracking.
 
@@ -844,49 +901,7 @@ response = openai.chat.completions.create(
 
 See `examples/llm_instrumentation.py` for more integrations.
 
-## 🔐 MCP proxy
-
-`agentsentinel-mcp` is a stdio MCP server for MCP-native harnesses such as
-Claude Code and Cursor. It answers `initialize` locally and forwards
-`tools/list` and `tools/call` to the platform's `/mcp` endpoint with an
-agent-bound API key, so the harness gets governed tools and the model never
-sees a credential. Results pass through unchanged, including `isError` and
-`structuredContent.reason_code` on refusals.
-
-```bash
-pip install "agentsentinel-sdk[mcp]"   # Python 3.10+
-```
-
-```json
-{
-  "mcpServers": {
-    "agentsentinel": {
-      "command": "agentsentinel-mcp",
-      "env": {
-        "AGENT_SENTINEL_API_KEY": "<agent-bound API key>",
-        "AGENT_SENTINEL_HARNESS": "claude-code"
-      }
-    }
-  }
-}
-```
-
-- `AGENT_SENTINEL_API_KEY` (required) must be an agent-bound key.
-- `AGENT_SENTINEL_URL` (optional) overrides the hosted platform URL (for
-  self-hosted or staging); the proxy targets `<url>/mcp`. `https` is required unless the host is `localhost` or
-  `127.0.0.1`.
-- `AGENT_SENTINEL_HARNESS` (optional) is sent as `X-Sentinel-Harness`.
-
-A missing key or a disallowed URL exits non-zero with a one-line message on
-stderr. The key is only ever sent in the upstream `Authorization` header and
-never appears in output, logs or MCP messages. Upstream 401/403 or transport
-failures surface as an MCP error (`tools/list`) or an `isError` tool result
-(`tools/call`). See the [Claude Code](https://docs.agentsentinel.dev/ai-tools/claude-code)
-and [Cursor](https://docs.agentsentinel.dev/ai-tools/cursor) guides for a full
-walkthrough. `agent_sentinel.mcp` remains the client for the legacy
-REST facade.
-
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Logs not appearing?
 
@@ -913,15 +928,15 @@ mv .agent-sentinel/ledger.jsonl .agent-sentinel/ledger-$(date +%Y%m%d).jsonl
 gzip .agent-sentinel/ledger-*.jsonl
 ```
 
-## 📄 License
+## License
 
 MIT License - see LICENSE file for details
 
-## 🤝 Contributing
+## Contributing
 
-See the main repository README for contribution guidelines.
+See the [monorepo](https://github.com/agent-sentinel/agent-sentinel) for contribution guidelines.
 
-## 📧 Support
+## Support
 
 - Issues: [GitHub Issues](https://github.com/agent-sentinel/agent-sentinel/issues)
 - Email: hello@agentsentinel.dev

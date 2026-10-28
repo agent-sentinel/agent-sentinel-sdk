@@ -221,7 +221,7 @@ class TestLedgerIntegration:
 
     def _read_last_entry(self, tmp_path) -> dict:
         log_path = tmp_path / ".agent-sentinel" / "ledger.jsonl"
-        with open(log_path, "r", encoding="utf-8") as f:
+        with open(log_path, encoding="utf-8") as f:
             lines = [line for line in f if line.strip()]
         return json.loads(lines[-1])
 
@@ -262,7 +262,7 @@ class TestGuardIntegration:
 
     def _read_entries(self, tmp_path) -> list:
         log_path = Ledger.get_log_path()
-        with open(log_path, "r", encoding="utf-8") as f:
+        with open(log_path, encoding="utf-8") as f:
             return [json.loads(line) for line in f if line.strip()]
 
     def test_secret_kwarg_redacted_before_ledger_write(

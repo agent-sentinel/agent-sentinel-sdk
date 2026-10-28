@@ -11,15 +11,15 @@ import os
 import json
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any
-from enum import Enum
+from datetime import datetime, timezone, UTC
+from typing import Any
+from enum import Enum, StrEnum
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("agent_sentinel")
 
 
-class InterventionType(str, Enum):
+class InterventionType(StrEnum):
     """Type of intervention performed by Sentinel."""
     HARD_BLOCK = "hard_block"              # Action completely denied
     APPROVAL_REQUIRED = "approval_required"  # Escalated for human approval
@@ -35,7 +35,7 @@ class InterventionType(str, Enum):
     IDEMPOTENT_REPLAY = "idempotent_replay"  # Returned cached result for repeated idempotency key
 
 
-class InterventionOutcome(str, Enum):
+class InterventionOutcome(StrEnum):
     """Final outcome of the intervention."""
     BLOCKED = "blocked"                    # Action was prevented
     ESCALATED = "escalated"                # Sent for approval (may be pending)
@@ -59,14 +59,14 @@ class InterventionRecord:
     
     # Action details
     action_name: str
-    action_description: Optional[str] = None
+    action_description: str | None = None
     
     # Context
-    agent_id: Optional[str] = None
-    run_id: Optional[str] = None
-    task_id: Optional[str] = None
-    mission_id: Optional[str] = None
-    policy_name: Optional[str] = None
+    agent_id: str | None = None
+    run_id: str | None = None
+    task_id: str | None = None
+    mission_id: str | None = None
+    policy_name: str | None = None
     
     # Cost/Risk
     estimated_cost: float = 0.0
@@ -74,26 +74,26 @@ class InterventionRecord:
     risk_level: str = "medium"
     
     # The "blast radius" - what was avoided
-    blast_radius: Dict[str, Any] = field(default_factory=dict)
+    blast_radius: dict[str, Any] = field(default_factory=dict)
     
     # Why it happened
-    reason: Optional[str] = None
-    agent_intent: Optional[str] = None
+    reason: str | None = None
+    agent_intent: str | None = None
     
     # Original vs modified inputs
-    original_inputs: Optional[Dict[str, Any]] = None
-    modified_inputs: Optional[Dict[str, Any]] = None
+    original_inputs: dict[str, Any] | None = None
+    modified_inputs: dict[str, Any] | None = None
     
     # Additional context
-    context: Dict[str, Any] = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict)
 
     # Structured remediation payload (for evidence violations)
-    remediation_payload: Optional[Dict[str, Any]] = None
+    remediation_payload: dict[str, Any] | None = None
 
     # Timestamp
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "intervention_type": self.intervention_type.value,
@@ -126,11 +126,11 @@ class InterventionTracker:
     Records interventions to local file and syncs to platform.
     """
     
-    _intervention_file: Optional[Path] = None
+    _intervention_file: Path | None = None
     _initialized: bool = False
     
     @classmethod
-    def initialize(cls, intervention_file: Optional[str] = None) -> None:
+    def initialize(cls, intervention_file: str | None = None) -> None:
         """
         Initialize the intervention tracker.
         
@@ -155,22 +155,22 @@ class InterventionTracker:
         intervention_type: InterventionType,
         outcome: InterventionOutcome,
         action_name: str,
-        action_description: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-        task_id: Optional[str] = None,
-        mission_id: Optional[str] = None,
-        policy_name: Optional[str] = None,
+        action_description: str | None = None,
+        agent_id: str | None = None,
+        run_id: str | None = None,
+        task_id: str | None = None,
+        mission_id: str | None = None,
+        policy_name: str | None = None,
         estimated_cost: float = 0.0,
         actual_cost: float = 0.0,
         risk_level: str = "medium",
-        blast_radius: Optional[Dict[str, Any]] = None,
-        reason: Optional[str] = None,
-        agent_intent: Optional[str] = None,
-        original_inputs: Optional[Dict[str, Any]] = None,
-        modified_inputs: Optional[Dict[str, Any]] = None,
-        context: Optional[Dict[str, Any]] = None,
-        remediation_payload: Optional[Dict[str, Any]] = None,
+        blast_radius: dict[str, Any] | None = None,
+        reason: str | None = None,
+        agent_intent: str | None = None,
+        original_inputs: dict[str, Any] | None = None,
+        modified_inputs: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        remediation_payload: dict[str, Any] | None = None,
     ) -> None:
         """
         Record an intervention.
@@ -217,7 +217,7 @@ class InterventionTracker:
             logger.error(f"Failed to record intervention: {e}")
     
     @classmethod
-    def get_interventions(cls, limit: Optional[int] = None) -> list[InterventionRecord]:
+    def get_interventions(cls, limit: int | None = None) -> list[InterventionRecord]:
         """
         Read interventions from local file.
         
@@ -236,7 +236,7 @@ class InterventionTracker:
         interventions = []
         
         try:
-            with open(cls._intervention_file, "r") as f:
+            with open(cls._intervention_file) as f:
                 for line in f:
                     if line.strip():
                         data = json.loads(line)

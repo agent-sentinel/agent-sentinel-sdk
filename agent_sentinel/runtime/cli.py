@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import httpx
@@ -44,7 +44,7 @@ async def serve(
     read_stream: Any,
     write_stream: Any,
     *,
-    http_transport: Optional[httpx.AsyncBaseTransport] = None,
+    http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> None:
     """Run the stdio proxy with ``runtime_config`` over the given MCP streams."""
     from .. import mcp_proxy
@@ -118,7 +118,7 @@ def _run(cfg: RuntimeConfig) -> int:
     return 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Console entry point. Unusable arguments exit 2 (argparse)."""
     args = _parser().parse_args(argv)
     try:

@@ -17,9 +17,9 @@ import threading
 import time
 import uuid
 import random
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, UTC
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Literal
 
 try:
     import httpx
@@ -42,10 +42,10 @@ class SyncConfig:
     
     def __init__(
         self,
-        platform_url: Optional[str] = None,
-        api_token: Optional[str] = None,
-        run_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
+        platform_url: str | None = None,
+        api_token: str | None = None,
+        run_id: str | None = None,
+        agent_id: str | None = None,
         flush_interval: float = 10.0,
         batch_size: int = 100,
         max_retries: int = 3,
@@ -111,7 +111,7 @@ class BackgroundSync:
             config.enabled = False
         
         self.config = config
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._last_sync_offset = 0  # Track how many lines we've uploaded
         self._last_intervention_sync_offset = 0  # Track interventions file position
@@ -217,7 +217,7 @@ class BackgroundSync:
         # Read new entries (skip already-uploaded ones)
         entries = []
         try:
-            with open(ledger_path, "r") as f:
+            with open(ledger_path) as f:
                 lines = f.readlines()
                 new_lines = lines[self._last_sync_offset:]
                 
@@ -282,7 +282,7 @@ class BackgroundSync:
         # Read new intervention records
         interventions = []
         try:
-            with open(intervention_file, "r") as f:
+            with open(intervention_file) as f:
                 lines = f.readlines()
                 new_lines = lines[self._last_intervention_sync_offset:]
                 
@@ -366,7 +366,7 @@ class BackgroundSync:
         
         return success_count == len(interventions)
     
-    def _upload_batch(self, entries: list[dict], run_id: Optional[str] = None) -> bool:
+    def _upload_batch(self, entries: list[dict], run_id: str | None = None) -> bool:
         """
         Upload a batch of entries to platform.
 
@@ -552,9 +552,9 @@ class BackgroundSync:
         Ledger.record() between our file-read and the rename may be lost.
         This is the standard logrotate trade-off for a telemetry buffer.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=self.config.local_retention_hours)
+        cutoff = datetime.now(UTC) - timedelta(hours=self.config.local_retention_hours)
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 lines = f.readlines()
 
             kept = []
@@ -652,18 +652,18 @@ class ManualSync:
 
 
 # Global sync instance (optional - users can manage their own)
-_global_sync: Optional[Union[BackgroundSync, ManualSync]] = None
+_global_sync: BackgroundSync | ManualSync | None = None
 
 
 def enable_remote_sync(
-    platform_url: Optional[str] = None,
-    api_token: Optional[str] = None,
-    run_id: Optional[str] = None,
-    agent_id: Optional[str] = None,
+    platform_url: str | None = None,
+    api_token: str | None = None,
+    run_id: str | None = None,
+    agent_id: str | None = None,
     flush_interval: float = 10.0,
     sync_mode: Literal["background", "manual"] = "background",
     auto_start: bool = True,
-) -> Union[BackgroundSync, ManualSync]:
+) -> BackgroundSync | ManualSync:
     """
     Enable remote sync to platform (convenience function).
 
@@ -711,7 +711,7 @@ def enable_remote_sync(
     return _global_sync
 
 
-def get_sync() -> Optional[Union[BackgroundSync, ManualSync]]:
+def get_sync() -> BackgroundSync | ManualSync | None:
     """
     Get the global sync instance.
     
@@ -758,9 +758,9 @@ def flush() -> None:
 
 
 def manual_flush(
-    platform_url: Optional[str] = None,
-    api_token: Optional[str] = None,
-    run_id: Optional[str] = None,
+    platform_url: str | None = None,
+    api_token: str | None = None,
+    run_id: str | None = None,
 ) -> None:
     """
     One-shot flush of all pending ledger entries and interventions.

@@ -2,8 +2,8 @@
 Tests for ``agentsentinel-runtime``'s config file and the ``config`` / ``doctor``
 subcommands (agent_sentinel.runtime).
 
-The runtime builds on the stdio proxy, which needs the optional ``mcp`` extra
-(Python 3.10+), so every test here skips without it, as in test_mcp_proxy.py.
+The runtime builds on the stdio proxy, which needs the optional ``mcp`` extra,
+so every test here skips without it, as in test_mcp_proxy.py.
 
 Every error path is checked against a sentinel key: no ConfigError message,
 stdout or stderr line may contain it, or a distinctive fragment of it.

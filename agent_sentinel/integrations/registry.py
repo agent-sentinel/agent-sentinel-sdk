@@ -9,12 +9,12 @@ from __future__ import annotations
 import logging
 import sys
 from types import ModuleType
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger("agent_sentinel.integrations.registry")
 
 
-def discover_tools(modules: Optional[List[ModuleType]] = None) -> List[Dict[str, Any]]:
+def discover_tools(modules: list[ModuleType] | None = None) -> list[dict[str, Any]]:
     """
     Discover all sentinel-guarded tool functions.
 
@@ -69,12 +69,12 @@ def discover_tools(modules: Optional[List[ModuleType]] = None) -> List[Dict[str,
 
 
 def auto_register_tools(
-    platform_url: Optional[str] = None,
-    api_token: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    modules: Optional[List[ModuleType]] = None,
-    sdk_version: Optional[str] = None,
-) -> Dict[str, Any]:
+    platform_url: str | None = None,
+    api_token: str | None = None,
+    agent_id: str | None = None,
+    modules: list[ModuleType] | None = None,
+    sdk_version: str | None = None,
+) -> dict[str, Any]:
     """
     Discover and batch-register sentinel tools with the platform.
 

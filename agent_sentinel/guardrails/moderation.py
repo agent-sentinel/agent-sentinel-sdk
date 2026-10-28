@@ -14,7 +14,8 @@ structure extracting strings, and returns a structured ModerationResult.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Protocol
+from typing import Any, Protocol
+from collections.abc import Iterable
 
 
 # ---------------------------------------------------------------------------
@@ -26,12 +27,12 @@ from typing import Any, Dict, Iterable, List, Optional, Protocol
 class ModerationResult:
     """Outcome of moderating a single string."""
     flagged: bool
-    categories: List[str]
+    categories: list[str]
     field_path: str = ""
     snippet: str = ""          # truncated excerpt for debugging
     severity: str = "medium"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "flagged": self.flagged,
             "categories": self.categories,
@@ -62,7 +63,7 @@ class ModerationRule:
             "hate_severe",
         )
     )
-    moderator: Optional["Moderator"] = None
+    moderator: Moderator | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ class Moderator(Protocol):
 # configure a richer moderator (OpenAI moderation, Azure Content Safety, etc.)
 # for production. The lists below are deliberately short and conservative —
 # long, explicit lexicons are out of scope for this file.
-_DEFAULT_KEYWORDS: Dict[str, List[str]] = {
+_DEFAULT_KEYWORDS: dict[str, list[str]] = {
     "violence": [
         "kill yourself",
         "how to make a bomb",
@@ -110,13 +111,13 @@ class KeywordModerator:
     a real moderation service.
     """
 
-    def __init__(self, keywords: Optional[Dict[str, List[str]]] = None) -> None:
+    def __init__(self, keywords: dict[str, list[str]] | None = None) -> None:
         base = {k: list(v) for k, v in _DEFAULT_KEYWORDS.items()}
         if keywords:
             for cat, words in keywords.items():
                 base.setdefault(cat, []).extend(words)
         # Precompute lowercased for speed
-        self._lc: Dict[str, List[str]] = {
+        self._lc: dict[str, list[str]] = {
             k: [w.lower() for w in v if w] for k, v in base.items()
         }
 
@@ -124,7 +125,7 @@ class KeywordModerator:
         if not isinstance(text, str) or not text:
             return ModerationResult(flagged=False, categories=[])
         hay = text.lower()
-        hit: List[str] = []
+        hit: list[str] = []
         for cat, words in self._lc.items():
             for w in words:
                 if w and w in hay:
@@ -186,7 +187,7 @@ class GeminiModerator:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         model: str = "gemini-2.5-flash",
     ) -> None:
         import os
@@ -280,25 +281,25 @@ class ModerationGuard:
 
     @staticmethod
     def scan_kwargs(
-        kwargs: Optional[Dict[str, Any]],
-        rule: Optional[ModerationRule] = None,
-    ) -> List[ModerationResult]:
+        kwargs: dict[str, Any] | None,
+        rule: ModerationRule | None = None,
+    ) -> list[ModerationResult]:
         if not kwargs:
             return []
         rule = rule or ModerationRule()
         moderator = rule.moderator or KeywordModerator()
-        results: List[ModerationResult] = []
+        results: list[ModerationResult] = []
         ModerationGuard._walk("", kwargs, moderator, results)
         return results
 
     @staticmethod
     def should_block(
-        results: List[ModerationResult],
+        results: list[ModerationResult],
         rule: ModerationRule,
-    ) -> List[ModerationResult]:
+    ) -> list[ModerationResult]:
         """Filter to only the results that should cause a block under the rule."""
         block_cats = set(rule.block_categories)
-        blocking: List[ModerationResult] = []
+        blocking: list[ModerationResult] = []
         for r in results:
             if not r.flagged:
                 continue
@@ -314,7 +315,7 @@ class ModerationGuard:
         prefix: str,
         value: Any,
         moderator: Moderator,
-        sink: List[ModerationResult],
+        sink: list[ModerationResult],
     ) -> None:
         if isinstance(value, str):
             res = moderator.moderate(value)

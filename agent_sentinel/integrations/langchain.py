@@ -40,7 +40,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any
+from collections.abc import Sequence
 from uuid import UUID
 
 from ..cost import CostTracker
@@ -119,12 +120,12 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     
     def __init__(
         self,
-        run_name: Optional[str] = None,
+        run_name: str | None = None,
         track_costs: bool = True,
         track_tools: bool = True,
         auto_log: bool = True,
         enforce_policies: bool = True,
-        tags: Optional[List[str]] = None,
+        tags: list[str] | None = None,
     ):
         """Initialize the callback handler."""
         if not _LANGCHAIN_AVAILABLE:
@@ -142,9 +143,9 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         self.tags = tags or ["langchain"]
         
         # Track call times, counts, and tool names
-        self._call_times: Dict[str, float] = {}
-        self._call_counts: Dict[str, int] = {}
-        self._tool_names: Dict[str, str] = {}  # run_id -> tool_name
+        self._call_times: dict[str, float] = {}
+        self._call_counts: dict[str, int] = {}
+        self._tool_names: dict[str, str] = {}  # run_id -> tool_name
         
         # Session tracking
         self._session_start = time.time()
@@ -158,7 +159,7 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     # 1. Active Policy Enforcement (The "Visa Check")
     # =========================================================================
     
-    def _enforce_policy(self, action_name: str, cost: float, metadata: Dict[str, Any]) -> None:
+    def _enforce_policy(self, action_name: str, cost: float, metadata: dict[str, Any]) -> None:
         """
         Helper to check policy and record interventions if blocked.
         
@@ -235,13 +236,13 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     
     def on_llm_start(
         self,
-        serialized: Dict[str, Any],
-        prompts: List[str],
+        serialized: dict[str, Any],
+        prompts: list[str],
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when LLM starts running. Enforces policy before execution."""
@@ -269,8 +270,8 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         response: LLMResult,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when LLM ends running."""
@@ -346,11 +347,11 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     
     def on_llm_error(
         self,
-        error: Union[Exception, KeyboardInterrupt],
+        error: Exception | KeyboardInterrupt,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when LLM errors."""
@@ -382,13 +383,13 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     
     def on_tool_start(
         self,
-        serialized: Dict[str, Any],
+        serialized: dict[str, Any],
         input_str: str,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when tool starts running. Enforces policy before execution."""
@@ -420,8 +421,8 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         output: str,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when tool ends running."""
@@ -464,11 +465,11 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     
     def on_tool_error(
         self,
-        error: Union[Exception, KeyboardInterrupt],
+        error: Exception | KeyboardInterrupt,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when tool errors."""
@@ -506,8 +507,8 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         action: AgentAction,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when agent takes an action."""
@@ -523,8 +524,8 @@ class SentinelCallbackHandler(BaseCallbackHandler):
         finish: AgentFinish,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when agent finishes."""
@@ -532,13 +533,13 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     
     def on_chain_start(
         self,
-        serialized: Dict[str, Any],
-        inputs: Dict[str, Any],
+        serialized: dict[str, Any],
+        inputs: dict[str, Any],
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when chain starts."""
@@ -549,11 +550,11 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     
     def on_chain_end(
         self,
-        outputs: Dict[str, Any],
+        outputs: dict[str, Any],
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when chain ends."""
@@ -566,11 +567,11 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     
     def on_chain_error(
         self,
-        error: Union[Exception, KeyboardInterrupt],
+        error: Exception | KeyboardInterrupt,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[List[str]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when chain errors."""
@@ -585,7 +586,7 @@ class SentinelCallbackHandler(BaseCallbackHandler):
     # 3. Utility Methods
     # =========================================================================
     
-    def get_run_summary(self) -> Dict[str, Any]:
+    def get_run_summary(self) -> dict[str, Any]:
         """
         Get a summary of the current run.
         
@@ -607,7 +608,7 @@ class SentinelCallbackHandler(BaseCallbackHandler):
 
 # Convenience function for quick setup
 def create_sentinel_handler(
-    run_name: Optional[str] = None,
+    run_name: str | None = None,
     **kwargs: Any,
 ) -> SentinelCallbackHandler:
     """

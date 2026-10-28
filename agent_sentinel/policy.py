@@ -22,8 +22,8 @@ import time
 import logging
 import threading
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, List, Any
+from datetime import datetime, timedelta, timezone, UTC
+from typing import Any
 from dataclasses import dataclass, field
 
 from .cost import CostTracker
@@ -78,38 +78,38 @@ class PolicyConfig:
         approval_threshold_usd: Actions costing more than this require approval
         approval_timeout_seconds: How long to wait for approval
     """
-    session_budget: Optional[float] = None
-    run_budget: Optional[float] = None
-    action_budgets: Dict[str, float] = field(default_factory=dict)
-    denied_actions: List[str] = field(default_factory=list)
-    allowed_actions: Optional[List[str]] = None
-    rate_limits: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    session_budget: float | None = None
+    run_budget: float | None = None
+    action_budgets: dict[str, float] = field(default_factory=dict)
+    denied_actions: list[str] = field(default_factory=list)
+    allowed_actions: list[str] | None = None
+    rate_limits: dict[str, dict[str, int]] = field(default_factory=dict)
     strict_mode: bool = True
     # Approval Inbox settings
     require_approval: bool = False
-    approval_actions: List[str] = field(default_factory=list)
-    approval_tags: List[str] = field(default_factory=list)
-    approval_risk_levels: List[str] = field(default_factory=list)
-    approval_threshold_usd: Optional[float] = None
+    approval_actions: list[str] = field(default_factory=list)
+    approval_tags: list[str] = field(default_factory=list)
+    approval_risk_levels: list[str] = field(default_factory=list)
+    approval_threshold_usd: float | None = None
     approval_timeout_seconds: int = 3600
     # Evidence graph settings (action correctness enforcement)
-    evidence_requirements: Dict[str, List[str]] = field(default_factory=dict)
-    evidence_max_age_seconds: Dict[str, int] = field(default_factory=dict)
-    commit_actions: List[str] = field(default_factory=list)
-    evidence_actions: List[str] = field(default_factory=list)
-    argument_constraints: Dict[str, dict] = field(default_factory=dict)
-    grounding_rules: Dict[str, Dict[str, Dict[str, str]]] = field(default_factory=dict)
+    evidence_requirements: dict[str, list[str]] = field(default_factory=dict)
+    evidence_max_age_seconds: dict[str, int] = field(default_factory=dict)
+    commit_actions: list[str] = field(default_factory=list)
+    evidence_actions: list[str] = field(default_factory=list)
+    argument_constraints: dict[str, dict] = field(default_factory=dict)
+    grounding_rules: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
     # Built-in guardrails (A1-A4): opt-in, per-action.
     # Map action name -> rule instance. See agent_sentinel.guardrails for rule shapes.
-    pii_rules: Dict[str, Any] = field(default_factory=dict)
-    moderation_rules: Dict[str, Any] = field(default_factory=dict)
-    loop_rules: Dict[str, Any] = field(default_factory=dict)
+    pii_rules: dict[str, Any] = field(default_factory=dict)
+    moderation_rules: dict[str, Any] = field(default_factory=dict)
+    loop_rules: dict[str, Any] = field(default_factory=dict)
     # Global toggle: scan every action with the default rule when no per-action rule exists.
     pii_default_enabled: bool = False
     moderation_default_enabled: bool = False
     loop_default_enabled: bool = False
     # Budget warning thresholds (percentage of budget consumed at which to emit a BUDGET_WARNING)
-    budget_warning_thresholds: List[int] = field(default_factory=lambda: [80])
+    budget_warning_thresholds: list[int] = field(default_factory=lambda: [80])
 
 
 @dataclass
@@ -120,10 +120,10 @@ class RemotePolicyConfig:
     AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL) and ``api_token`` to
     AGENT_SENTINEL_API_KEY.
     """
-    platform_url: Optional[str] = None
-    api_token: Optional[str] = None
-    agent_id: Optional[str] = None
-    run_id: Optional[str] = None
+    platform_url: str | None = None
+    api_token: str | None = None
+    agent_id: str | None = None
+    run_id: str | None = None
     refresh_interval: float = 300.0  # 5 minutes default
     cache_ttl: float = 600.0  # 10 minutes cache TTL
     enabled: bool = True
@@ -141,7 +141,7 @@ class RateLimiter:
     """
     
     def __init__(self):
-        self._action_history: Dict[str, List[float]] = {}
+        self._action_history: dict[str, list[float]] = {}
         self._lock = threading.Lock()
     
     def check_rate_limit(
@@ -206,7 +206,7 @@ class PolicyCache:
     Stores policies to disk and manages cache invalidation.
     """
     
-    def __init__(self, cache_dir: Optional[Path] = None):
+    def __init__(self, cache_dir: Path | None = None):
         if cache_dir:
             self.cache_dir = Path(cache_dir)
         else:
@@ -217,7 +217,7 @@ class PolicyCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_file = self.cache_dir / "policy_cache.json"
     
-    def save(self, policies: List[Dict[str, Any]], ttl: float) -> None:
+    def save(self, policies: list[dict[str, Any]], ttl: float) -> None:
         """
         Save policies to cache with expiration time.
         
@@ -226,7 +226,7 @@ class PolicyCache:
             ttl: Time to live in seconds
         """
         try:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             cache_data = {
                 "policies": policies,
                 "cached_at": now.isoformat(),
@@ -241,7 +241,7 @@ class PolicyCache:
         except Exception as e:
             logger.error(f"Failed to save policy cache: {e}")
     
-    def load(self) -> Optional[List[Dict[str, Any]]]:
+    def load(self) -> list[dict[str, Any]] | None:
         """
         Load policies from cache if not expired.
         
@@ -253,15 +253,15 @@ class PolicyCache:
                 logger.debug("No policy cache found")
                 return None
             
-            with open(self.cache_file, "r") as f:
+            with open(self.cache_file) as f:
                 cache_data = json.load(f)
             
             # Check expiration
             expires_at = datetime.fromisoformat(cache_data["expires_at"])
             # Ensure both datetimes are timezone-aware
             if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) > expires_at:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if datetime.now(UTC) > expires_at:
                 logger.debug("Policy cache expired")
                 return None
             
@@ -273,7 +273,7 @@ class PolicyCache:
             logger.error(f"Failed to load policy cache: {e}")
             return None
     
-    def load_stale(self) -> Optional[List[Dict[str, Any]]]:
+    def load_stale(self) -> list[dict[str, Any]] | None:
         """
         Load policies from cache even if expired (stale fallback).
 
@@ -286,7 +286,7 @@ class PolicyCache:
             if not self.cache_file.exists():
                 return None
 
-            with open(self.cache_file, "r") as f:
+            with open(self.cache_file) as f:
                 cache_data = json.load(f)
 
             policies = cache_data["policies"]
@@ -337,14 +337,14 @@ class PolicyEngine:
         PolicyEngine.check_action("search_web", cost=0.02)
     """
     
-    _config: Optional[PolicyConfig] = None
+    _config: PolicyConfig | None = None
     _initialized: bool = False
     _rate_limiter: RateLimiter = RateLimiter()
     
     # Remote sync state
-    _remote_config: Optional[RemotePolicyConfig] = None
-    _policy_cache: Optional[PolicyCache] = None
-    _sync_thread: Optional[threading.Thread] = None
+    _remote_config: RemotePolicyConfig | None = None
+    _policy_cache: PolicyCache | None = None
+    _sync_thread: threading.Thread | None = None
     _stop_sync: threading.Event = threading.Event()
     _sync_lock: threading.Lock = threading.Lock()
 
@@ -415,7 +415,7 @@ class PolicyEngine:
         logger.info("Policy enforcement mode set to '%s'", normalized)
 
     @classmethod
-    def resolve_enforcement_mode(cls, fail_closed: Optional[bool] = None) -> str:
+    def resolve_enforcement_mode(cls, fail_closed: bool | None = None) -> str:
         """
         Resolve the effective enforcement mode for a single check.
 
@@ -474,7 +474,7 @@ class PolicyEngine:
         return cls._enforcement_mode
 
     @classmethod
-    def _is_write_impact(cls, impact: Optional[str]) -> bool:
+    def _is_write_impact(cls, impact: str | None) -> bool:
         """
         True for anything "fail_closed_writes" should block: declared
         "medium"/"high" impact, a missing impact (guarded_action's own
@@ -488,7 +488,7 @@ class PolicyEngine:
     def _handle_unconfigured(
         cls,
         action: str,
-        fail_closed: Optional[bool] = None,
+        fail_closed: bool | None = None,
         impact: str = "medium",
     ) -> None:
         """
@@ -543,20 +543,20 @@ class PolicyEngine:
     @classmethod
     def configure(
         cls,
-        session_budget: Optional[float] = None,
-        run_budget: Optional[float] = None,
-        action_budgets: Optional[Dict[str, float]] = None,
-        denied_actions: Optional[List[str]] = None,
-        allowed_actions: Optional[List[str]] = None,
-        rate_limits: Optional[Dict[str, Dict[str, int]]] = None,
+        session_budget: float | None = None,
+        run_budget: float | None = None,
+        action_budgets: dict[str, float] | None = None,
+        denied_actions: list[str] | None = None,
+        allowed_actions: list[str] | None = None,
+        rate_limits: dict[str, dict[str, int]] | None = None,
         strict_mode: bool = True,
-        evidence_requirements: Optional[Dict[str, List[str]]] = None,
-        evidence_max_age_seconds: Optional[Dict[str, int]] = None,
-        commit_actions: Optional[List[str]] = None,
-        evidence_actions: Optional[List[str]] = None,
-        argument_constraints: Optional[Dict[str, dict]] = None,
-        grounding_rules: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None,
-        fail_closed: Optional[bool] = None,
+        evidence_requirements: dict[str, list[str]] | None = None,
+        evidence_max_age_seconds: dict[str, int] | None = None,
+        commit_actions: list[str] | None = None,
+        evidence_actions: list[str] | None = None,
+        argument_constraints: dict[str, dict] | None = None,
+        grounding_rules: dict[str, dict[str, dict[str, str]]] | None = None,
+        fail_closed: bool | None = None,
     ) -> None:
         """
         Configure policy engine programmatically.
@@ -631,7 +631,7 @@ class PolicyEngine:
         logger.info("Policy engine configured programmatically")
     
     @classmethod
-    def load_from_yaml(cls, path: Optional[str] = None) -> None:
+    def load_from_yaml(cls, path: str | None = None) -> None:
         """
         Load policy configuration from YAML file.
         
@@ -692,7 +692,7 @@ class PolicyEngine:
             return
         
         try:
-            with open(config_path, "r") as f:
+            with open(config_path) as f:
                 data = yaml.safe_load(f)
             
             if not data:
@@ -744,10 +744,10 @@ class PolicyEngine:
     @classmethod
     def enable_remote_sync(
         cls,
-        platform_url: Optional[str] = None,
-        api_token: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        run_id: Optional[str] = None,
+        platform_url: str | None = None,
+        api_token: str | None = None,
+        agent_id: str | None = None,
+        run_id: str | None = None,
         refresh_interval: float = 300.0,
         cache_ttl: float = 600.0
     ) -> None:
@@ -822,7 +822,7 @@ class PolicyEngine:
                     logger.warning("Failed to fetch policies from platform and no cache available")
     
     @classmethod
-    def _fetch_policies_from_platform(cls) -> Optional[List[Dict[str, Any]]]:
+    def _fetch_policies_from_platform(cls) -> list[dict[str, Any]] | None:
         """
         Fetch policies from platform API.
 
@@ -887,7 +887,7 @@ class PolicyEngine:
             return None
     
     @classmethod
-    def _apply_remote_policies(cls, policies: List[Dict[str, Any]]) -> None:
+    def _apply_remote_policies(cls, policies: list[dict[str, Any]]) -> None:
         """
         Apply remote policies by merging them with local config.
         
@@ -1108,8 +1108,8 @@ class PolicyEngine:
         cls,
         action: str,
         cost: float,
-        kwargs: Optional[Dict[str, Any]] = None,
-        fail_closed: Optional[bool] = None,
+        kwargs: dict[str, Any] | None = None,
+        fail_closed: bool | None = None,
         impact: str = "medium",
     ) -> None:
         """
@@ -1192,8 +1192,8 @@ class PolicyEngine:
         cls,
         action: str,
         cost: float,
-        kwargs: Optional[Dict[str, Any]] = None,
-        fail_closed: Optional[bool] = None,
+        kwargs: dict[str, Any] | None = None,
+        fail_closed: bool | None = None,
         impact: str = "medium",
     ) -> None:
         """
@@ -1266,7 +1266,7 @@ class PolicyEngine:
     def _raise_evaluation_error(
         cls,
         action: str,
-        fail_closed: Optional[bool],
+        fail_closed: bool | None,
         exc: Exception,
         impact: str = "medium",
     ) -> None:
@@ -1416,7 +1416,7 @@ class PolicyEngine:
 
     @classmethod
     def _check_evidence_and_args(
-        cls, action: str, config: Any, kwargs: Optional[Dict[str, Any]] = None
+        cls, action: str, config: Any, kwargs: dict[str, Any] | None = None
     ) -> None:
         """
         Evidence requirements, argument constraints and groundedness.
@@ -1573,7 +1573,7 @@ class PolicyEngine:
                 raise error
 
     @classmethod
-    def apply_config(cls, config: Optional[PolicyConfig]) -> None:
+    def apply_config(cls, config: PolicyConfig | None) -> None:
         """
         Install a previously captured PolicyConfig.
 
@@ -1592,7 +1592,7 @@ class PolicyEngine:
         cls._initialized = config is not None
 
     @classmethod
-    def get_config(cls) -> Optional[PolicyConfig]:
+    def get_config(cls) -> PolicyConfig | None:
         """
         Get current policy configuration.
         
@@ -1606,8 +1606,8 @@ class PolicyEngine:
         cls,
         action: str,
         cost: float,
-        tags: Optional[List[str]] = None,
-        risk_level: Optional[str] = None,
+        tags: list[str] | None = None,
+        risk_level: str | None = None,
     ) -> bool:
         """
         Check if an action requires human approval.

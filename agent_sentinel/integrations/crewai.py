@@ -40,7 +40,8 @@ from __future__ import annotations
 import functools
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
+from collections.abc import Callable
 
 from ..guard import guarded_action
 from ..cost import CostTracker
@@ -64,14 +65,14 @@ logger = logging.getLogger("agent_sentinel.integrations.crewai")
 
 
 def wrap_crew_action(
-    name: Optional[str] = None,
+    name: str | None = None,
     cost_usd: float = 0.0,
-    tags: Optional[List[str]] = None,
+    tags: list[str] | None = None,
     requires_human_approval: bool = False,
     produces_evidence: bool = False,
     is_commit: bool = False,
-    requires: Optional[List[str]] = None,
-    grounding_rules: Optional[dict] = None,
+    requires: list[str] | None = None,
+    grounding_rules: dict | None = None,
 ):
     """
     Decorator to wrap CrewAI actions with AgentSentinel tracking.
@@ -181,16 +182,16 @@ class SentinelCrew:
     
     def __init__(
         self,
-        agents: List[Agent],
-        tasks: List[Task],
-        run_name: Optional[str] = None,
+        agents: list[Agent],
+        tasks: list[Task],
+        run_name: str | None = None,
         track_costs: bool = True,
         track_tasks: bool = True,
         auto_log: bool = True,
         enforce_policies: bool = True,
         max_agent_steps: int = 50,
         detect_loops: bool = True,
-        tags: Optional[List[str]] = None,
+        tags: list[str] | None = None,
         **crew_kwargs: Any,
     ):
         """Initialize the SentinelCrew with automatic security injection."""
@@ -212,16 +213,16 @@ class SentinelCrew:
         self.tags = tags or ["crewai"]
         
         # Track execution state
-        self._run_start_time: Optional[float] = None
-        self._run_end_time: Optional[float] = None
-        self._task_times: Dict[str, float] = {}
+        self._run_start_time: float | None = None
+        self._run_end_time: float | None = None
+        self._task_times: dict[str, float] = {}
         
         # Cost tracking at run level
         self._run_start_cost = 0.0
         
         # Agent step tracking for runaway detection
-        self._agent_steps: Dict[str, int] = {}
-        self._agent_actions: Dict[str, List[str]] = {}
+        self._agent_steps: dict[str, int] = {}
+        self._agent_actions: dict[str, list[str]] = {}
         
         # CRITICAL: Inject security BEFORE creating the Crew
         # This is the "Chip Reader" injection step
@@ -597,7 +598,7 @@ class SentinelCrew:
     # Crew Execution Methods
     # =========================================================================
     
-    def kickoff(self, inputs: Optional[Dict[str, Any]] = None) -> Any:
+    def kickoff(self, inputs: dict[str, Any] | None = None) -> Any:
         """
         Execute the crew with AgentSentinel tracking.
         
@@ -679,7 +680,7 @@ class SentinelCrew:
             logger.error(f"Crew execution failed: {self.run_name} | Error: {e}")
             raise
     
-    def get_run_summary(self) -> Dict[str, Any]:
+    def get_run_summary(self) -> dict[str, Any]:
         """
         Get a summary of the crew execution.
         
@@ -745,8 +746,8 @@ class SentinelAgent:
         self,
         agent: Agent,
         track_actions: bool = True,
-        agent_id: Optional[str] = None,
-        tags: Optional[List[str]] = None,
+        agent_id: str | None = None,
+        tags: list[str] | None = None,
     ):
         """Initialize the SentinelAgent wrapper."""
         if not _CREWAI_AVAILABLE:
@@ -773,7 +774,7 @@ class SentinelAgent:
         self,
         action_name: str,
         cost_usd: float = 0.0,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """
         Manually track an agent action.
@@ -811,7 +812,7 @@ class SentinelAgent:
 # Utility function to wrap existing crew
 def wrap_existing_crew(
     crew: Crew,
-    run_name: Optional[str] = None,
+    run_name: str | None = None,
     **sentinel_kwargs: Any,
 ) -> SentinelCrew:
     """

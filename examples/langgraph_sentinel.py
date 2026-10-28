@@ -20,7 +20,7 @@ Run:
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from agent_sentinel import (
     InterventionTracker,
@@ -35,7 +35,7 @@ from agent_sentinel.integrations.langgraph import SentinelToolNode
 # ---------------------------------------------------------------------------
 
 
-def lookup_order(order_id: str) -> Dict[str, Any]:
+def lookup_order(order_id: str) -> dict[str, Any]:
     """Read tool: fetches order data and produces evidence."""
     # In real life: call your DB/API.
     db = {
@@ -45,12 +45,12 @@ def lookup_order(order_id: str) -> Dict[str, Any]:
     return db.get(order_id, {"order_id": order_id, "error": "not_found"})
 
 
-def validate_refund(order_id: str, reason: str) -> Dict[str, Any]:
+def validate_refund(order_id: str, reason: str) -> dict[str, Any]:
     """Read tool: decides eligibility based on prior evidence."""
     return {"order_id": order_id, "reason": reason, "eligible": True}
 
 
-def issue_refund(order_id: str, amount: float) -> Dict[str, Any]:
+def issue_refund(order_id: str, amount: float) -> dict[str, Any]:
     """Commit tool: performs the irreversible action."""
     return {"order_id": order_id, "amount": amount, "refunded": True}
 
@@ -104,13 +104,13 @@ tools = SentinelToolNode(
 # ---------------------------------------------------------------------------
 
 
-def _tool_call(name: str, args: Dict[str, Any], tc_id: str) -> Dict[str, Any]:
+def _tool_call(name: str, args: dict[str, Any], tc_id: str) -> dict[str, Any]:
     return {
         "tool_calls": [{"name": name, "args": args, "id": tc_id}],
     }
 
 
-def _state(name: str, args: Dict[str, Any], tc_id: str) -> Dict[str, Any]:
+def _state(name: str, args: dict[str, Any], tc_id: str) -> dict[str, Any]:
     return {"messages": [_tool_call(name, args, tc_id)]}
 
 

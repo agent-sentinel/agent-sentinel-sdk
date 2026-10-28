@@ -8,7 +8,6 @@ Pricing data last updated: December 2025
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
 
@@ -40,7 +39,7 @@ class ModelPricing:
 
 
 # OpenAI Pricing (as of December 2025)
-OPENAI_PRICING: Dict[str, ModelPricing] = {
+OPENAI_PRICING: dict[str, ModelPricing] = {
     # GPT-4 Models
     "gpt-4": ModelPricing(30.0, 60.0),
     "gpt-4-32k": ModelPricing(60.0, 120.0),
@@ -72,7 +71,7 @@ OPENAI_PRICING: Dict[str, ModelPricing] = {
 }
 
 # Anthropic Pricing (as of December 2025)
-ANTHROPIC_PRICING: Dict[str, ModelPricing] = {
+ANTHROPIC_PRICING: dict[str, ModelPricing] = {
     # Claude 3 Opus
     "claude-3-opus-20240229": ModelPricing(15.0, 75.0),
     
@@ -91,13 +90,13 @@ ANTHROPIC_PRICING: Dict[str, ModelPricing] = {
 }
 
 # Grok Pricing (xAI - as of December 2025)
-GROK_PRICING: Dict[str, ModelPricing] = {
+GROK_PRICING: dict[str, ModelPricing] = {
     "grok-1": ModelPricing(5.0, 15.0),  # Estimated pricing
     "grok-beta": ModelPricing(5.0, 15.0),
 }
 
 # Google Gemini Pricing (as of December 2025)
-GEMINI_PRICING: Dict[str, ModelPricing] = {
+GEMINI_PRICING: dict[str, ModelPricing] = {
     # Gemini 1.5 Pro
     "gemini-1.5-pro": ModelPricing(3.5, 10.5),
     "gemini-1.5-pro-latest": ModelPricing(3.5, 10.5),
@@ -113,7 +112,7 @@ GEMINI_PRICING: Dict[str, ModelPricing] = {
 }
 
 # Consolidated pricing lookup
-ALL_PRICING: Dict[str, Dict[str, ModelPricing]] = {
+ALL_PRICING: dict[str, dict[str, ModelPricing]] = {
     "openai": OPENAI_PRICING,
     "anthropic": ANTHROPIC_PRICING,
     "grok": GROK_PRICING,
@@ -125,8 +124,8 @@ ALL_PRICING: Dict[str, Dict[str, ModelPricing]] = {
 
 def get_model_pricing(
     model: str, 
-    provider: Optional[str] = None
-) -> Optional[ModelPricing]:
+    provider: str | None = None
+) -> ModelPricing | None:
     """
     Get pricing information for a specific model.
     
@@ -156,8 +155,8 @@ def calculate_token_cost(
     model: str,
     input_tokens: int,
     output_tokens: int,
-    provider: Optional[str] = None,
-) -> Tuple[float, bool]:
+    provider: str | None = None,
+) -> tuple[float, bool]:
     """
     Calculate the cost for a given number of tokens.
     
@@ -182,7 +181,7 @@ def calculate_token_cost(
 def estimate_cost_from_string(
     text: str,
     model: str,
-    provider: Optional[str] = None,
+    provider: str | None = None,
     chars_per_token: int = 4,
 ) -> float:
     """
@@ -206,7 +205,7 @@ def estimate_cost_from_string(
 
 
 # Model aliases for easier matching
-MODEL_ALIASES: Dict[str, str] = {
+MODEL_ALIASES: dict[str, str] = {
     # OpenAI aliases
     "gpt4": "gpt-4",
     "gpt-4-turbo-2024-04-09": "gpt-4-turbo",

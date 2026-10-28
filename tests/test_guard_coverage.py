@@ -338,7 +338,7 @@ class TestLedgerIntegration:
         # Verify entry in ledger
         log_path = Ledger.get_log_path()
         if log_path and log_path.exists():
-            with open(log_path, "r") as f:
+            with open(log_path) as f:
                 import json
                 entries = [json.loads(line) for line in f.readlines()]
             
@@ -362,7 +362,7 @@ class TestLedgerIntegration:
         # Verify error logged
         log_path = Ledger.get_log_path()
         if log_path and log_path.exists():
-            with open(log_path, "r") as f:
+            with open(log_path) as f:
                 import json
                 entries = [json.loads(line) for line in f.readlines()]
             

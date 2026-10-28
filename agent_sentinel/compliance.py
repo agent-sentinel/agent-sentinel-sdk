@@ -13,15 +13,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
-from typing import Optional, Callable, Any, Awaitable
-from enum import Enum
+from datetime import UTC, datetime
+from typing import Any
+from collections.abc import Callable, Awaitable
+from enum import Enum, StrEnum
 from dataclasses import dataclass, field, asdict
 
 logger = logging.getLogger("agent_sentinel.compliance")
 
 
-class ApprovalStatus(str, Enum):
+class ApprovalStatus(StrEnum):
     """Human oversight approval status (Article 14)"""
     NOT_REQUIRED = "not_required"
     PENDING = "pending"
@@ -30,7 +31,7 @@ class ApprovalStatus(str, Enum):
     TIMEOUT = "timeout"
 
 
-class ComplianceLevel(str, Enum):
+class ComplianceLevel(StrEnum):
     """Risk levels according to EU AI Act classification"""
     MINIMAL = "minimal"
     LIMITED = "limited"
@@ -48,7 +49,7 @@ class ApprovalRequest:
     risk_level: ComplianceLevel = ComplianceLevel.MINIMAL
     timeout_seconds: int = 300  # 5 minutes default
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization"""
@@ -66,7 +67,7 @@ class ApprovalResponse:
     approver_id: str | None = None
     approver_email: str | None = None
     notes: str | None = None
-    approved_at: datetime = field(default_factory=datetime.utcnow)
+    approved_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for compliance metadata"""
@@ -136,8 +137,8 @@ class HumanApprovalHandler:
         response = HumanApprovalHandler.request_approval_sync(...)
     """
 
-    _approval_callback: Optional[Callable[[ApprovalRequest], Awaitable[ApprovalResponse]]] = None
-    _sync_approval_callback: Optional[Callable[[ApprovalRequest], ApprovalResponse]] = None
+    _approval_callback: Callable[[ApprovalRequest], Awaitable[ApprovalResponse]] | None = None
+    _sync_approval_callback: Callable[[ApprovalRequest], ApprovalResponse] | None = None
 
     # ------------------------------------------------------------------
     # Instance API
@@ -145,7 +146,7 @@ class HumanApprovalHandler:
 
     def __init__(
         self,
-        callback: Optional[Callable[..., Any]] = None,
+        callback: Callable[..., Any] | None = None,
     ) -> None:
         """
         Create an instance-level handler.
@@ -162,8 +163,8 @@ class HumanApprovalHandler:
         self,
         action_name: str,
         estimated_cost: float = 0.0,
-        context: Optional[dict] = None,
-        timeout: Optional[int] = None,
+        context: dict | None = None,
+        timeout: int | None = None,
     ) -> bool:
         """
         Request human approval for an action (blocking).
@@ -202,8 +203,8 @@ class HumanApprovalHandler:
         self,
         action_name: str,
         estimated_cost: float = 0.0,
-        context: Optional[dict] = None,
-        timeout: Optional[int] = None,
+        context: dict | None = None,
+        timeout: int | None = None,
     ) -> bool:
         """
         Request human approval for an action (async).
@@ -368,7 +369,7 @@ class HumanApprovalHandler:
 
 
 # Global compliance context for tracking metadata during execution
-_current_compliance_metadata: Optional[ComplianceMetadata] = None
+_current_compliance_metadata: ComplianceMetadata | None = None
 
 
 def set_compliance_metadata(metadata: ComplianceMetadata):
@@ -377,7 +378,7 @@ def set_compliance_metadata(metadata: ComplianceMetadata):
     _current_compliance_metadata = metadata
 
 
-def get_compliance_metadata() -> Optional[ComplianceMetadata]:
+def get_compliance_metadata() -> ComplianceMetadata | None:
     """Get current compliance metadata"""
     return _current_compliance_metadata
 
@@ -401,7 +402,7 @@ def add_data_lineage(source: str, version: str, **kwargs):
         logger.debug(f"Added data lineage: {lineage_entry}")
 
 
-def set_decision_rationale(rationale: str, confidence: Optional[float] = None):
+def set_decision_rationale(rationale: str, confidence: float | None = None):
     """
     Set decision rationale for current action (chain of thought).
     

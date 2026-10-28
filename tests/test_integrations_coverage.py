@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock
-from typing import Any
 
 from agent_sentinel.cost import CostTracker
 from agent_sentinel.ledger import Ledger

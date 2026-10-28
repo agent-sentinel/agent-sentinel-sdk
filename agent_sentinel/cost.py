@@ -26,7 +26,6 @@ or via the environment, which is the usual path for a container:
 from __future__ import annotations
 
 import logging
-from typing import Optional, Dict
 from dataclasses import dataclass, field
 
 from .cost_backend import (
@@ -54,8 +53,8 @@ class CostCounter:
     """
     session_total: float = 0.0
     run_total: float = 0.0
-    action_counts: Dict[str, int] = field(default_factory=dict)
-    action_costs: Dict[str, float] = field(default_factory=dict)
+    action_counts: dict[str, int] = field(default_factory=dict)
+    action_costs: dict[str, float] = field(default_factory=dict)
 
 
 class CostTracker:
@@ -77,11 +76,11 @@ class CostTracker:
     environment variable to share counters across processes.
     """
 
-    _backend: Optional[CostBackend] = None
+    _backend: CostBackend | None = None
     _env_backend_checked: bool = False
     # Group/mission attribution (upstream). Independent of the storage
     # backend: it labels where costs came from, it does not hold counters.
-    _group_id: Optional[str] = None
+    _group_id: str | None = None
 
     # -- backend management ----------------------------------------------
 
@@ -119,7 +118,7 @@ class CostTracker:
         return cls._backend
 
     @classmethod
-    def set_backend(cls, backend: Optional[CostBackend]) -> None:
+    def set_backend(cls, backend: CostBackend | None) -> None:
         """
         Install a cost backend.
 
@@ -157,9 +156,9 @@ class CostTracker:
         cls,
         action: str,
         cost_usd: float,
-        session_budget: Optional[float] = None,
-        run_budget: Optional[float] = None,
-        action_budget: Optional[float] = None,
+        session_budget: float | None = None,
+        run_budget: float | None = None,
+        action_budget: float | None = None,
     ):
         """
         Atomically check a spend against every budget and record it.
@@ -224,7 +223,7 @@ class CostTracker:
         return cls._get_backend().snapshot().run_total
 
     @classmethod
-    def get_action_stats(cls, action: Optional[str] = None) -> Dict:
+    def get_action_stats(cls, action: str | None = None) -> dict:
         """
         Get statistics for actions.
 
@@ -279,12 +278,12 @@ class CostTracker:
         cls._group_id = group_id
 
     @classmethod
-    def get_group(cls) -> Optional[str]:
+    def get_group(cls) -> str | None:
         """Return the current group/mission ID, or None if not set."""
         return cls._group_id
 
     @classmethod
-    def get_snapshot(cls) -> Dict:
+    def get_snapshot(cls) -> dict:
         """
         Get a complete snapshot of all cost data.
 

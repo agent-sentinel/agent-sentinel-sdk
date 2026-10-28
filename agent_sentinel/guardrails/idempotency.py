@@ -23,8 +23,9 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional, Tuple
+from datetime import datetime, timezone, UTC
+from typing import Any
+from collections.abc import Callable
 
 
 @dataclass
@@ -73,11 +74,11 @@ class IdempotencyCache:
     """
 
     def __init__(self, default_ttl_seconds: float = 3600.0) -> None:
-        self._entries: Dict[Tuple[str, str], _Entry] = {}
+        self._entries: dict[tuple[str, str], _Entry] = {}
         self._lock = threading.Lock()
         self._default_ttl = default_ttl_seconds
 
-    def lookup(self, run_id: Optional[str], key: Optional[str], action: str) -> None:
+    def lookup(self, run_id: str | None, key: str | None, action: str) -> None:
         """
         If (run_id, key) has a live entry, raise IdempotencyHit.
         Otherwise return None.
@@ -104,10 +105,10 @@ class IdempotencyCache:
 
     def store(
         self,
-        run_id: Optional[str],
-        key: Optional[str],
+        run_id: str | None,
+        key: str | None,
         value: Any,
-        ttl_seconds: Optional[float] = None,
+        ttl_seconds: float | None = None,
     ) -> None:
         if not key:
             return
@@ -119,7 +120,7 @@ class IdempotencyCache:
                 value=value,
                 stored_at=now,
                 expires_at=now + ttl,
-                first_seen_at=datetime.now(timezone.utc),
+                first_seen_at=datetime.now(UTC),
                 ttl_seconds=ttl,
             )
 
@@ -146,7 +147,7 @@ class IdempotencyCache:
 DEFAULT_IDEMPOTENCY_CACHE = IdempotencyCache()
 
 
-def make_key(fn: Optional[Callable[..., str]], args: tuple, kwargs: dict) -> Optional[str]:
+def make_key(fn: Callable[..., str] | None, args: tuple, kwargs: dict) -> str | None:
     """
     Resolve an idempotency key from a callable or return it directly.
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional, Dict, List
+from typing import Any
 from dataclasses import dataclass
 from contextlib import contextmanager
 
@@ -33,14 +33,14 @@ class ReplayEntry:
     """A single recorded action from the ledger."""
     id: str
     action: str
-    inputs: Dict[str, Any]
+    inputs: dict[str, Any]
     outputs: Any
     cost_usd: float
     duration_ms: float
     outcome: str
     timestamp: str
-    tags: List[str]
-    run_id: Optional[str] = None
+    tags: list[str]
+    run_id: str | None = None
 
 
 class ReplayMode:
@@ -67,12 +67,12 @@ class ReplayMode:
             result = fetch_data("https://different-api.com")
     """
     
-    _active_replay: Optional["ReplayMode"] = None
-    _replay_stack: List["ReplayMode"] = []
+    _active_replay: ReplayMode | None = None
+    _replay_stack: list[ReplayMode] = []
     
     def __init__(
         self,
-        entries: List[ReplayEntry],
+        entries: list[ReplayEntry],
         strict: bool = True,
         warn_on_divergence: bool = True,
     ):
@@ -89,16 +89,16 @@ class ReplayMode:
         self.strict = strict
         self.warn_on_divergence = warn_on_divergence
         self.current_index = 0
-        self.divergences: List[Dict[str, Any]] = []
+        self.divergences: list[dict[str, Any]] = []
         
     @classmethod
     def from_run_id(
         cls,
         run_id: str,
-        ledger_path: Optional[Path] = None,
+        ledger_path: Path | None = None,
         strict: bool = True,
         warn_on_divergence: bool = True,
-    ) -> "ReplayMode":
+    ) -> ReplayMode:
         """
         Create a replay mode from a specific run ID.
         
@@ -133,10 +133,10 @@ class ReplayMode:
     @classmethod
     def from_ledger_file(
         cls,
-        ledger_path: "Path | str",
+        ledger_path: Path | str,
         strict: bool = True,
         warn_on_divergence: bool = True,
-    ) -> "ReplayMode":
+    ) -> ReplayMode:
         """
         Create a replay mode from an entire ledger file.
         
@@ -172,7 +172,7 @@ class ReplayMode:
         return cls(entries, strict=strict, warn_on_divergence=warn_on_divergence)
     
     @staticmethod
-    def _load_entries(ledger_path: Path, run_id: Optional[str]) -> List[ReplayEntry]:
+    def _load_entries(ledger_path: Path, run_id: str | None) -> list[ReplayEntry]:
         """
         Load entries from ledger file, optionally filtering by run_id.
         
@@ -189,7 +189,7 @@ class ReplayMode:
         """
         entries = []
         
-        with open(ledger_path, "r", encoding="utf-8") as f:
+        with open(ledger_path, encoding="utf-8") as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
@@ -240,7 +240,7 @@ class ReplayMode:
     def get_next_output(
         self, 
         action_name: str, 
-        inputs: Dict[str, Any]
+        inputs: dict[str, Any]
     ) -> tuple[Any, bool]:
         """
         Get the next recorded output for this action.
@@ -317,7 +317,7 @@ class ReplayMode:
         return entry.outputs, inputs_match
     
     @staticmethod
-    def _inputs_match(recorded: Dict[str, Any], current: Dict[str, Any]) -> bool:
+    def _inputs_match(recorded: dict[str, Any], current: dict[str, Any]) -> bool:
         """
         Check if current inputs match recorded inputs.
         
@@ -358,7 +358,7 @@ class ReplayMode:
         """
         return self.current_index, len(self.entries)
     
-    def get_divergences(self) -> List[Dict[str, Any]]:
+    def get_divergences(self) -> list[dict[str, Any]]:
         """
         Get list of all detected divergences.
         
@@ -367,7 +367,7 @@ class ReplayMode:
         """
         return self.divergences.copy()
     
-    def __enter__(self) -> "ReplayMode":
+    def __enter__(self) -> ReplayMode:
         """Enter replay mode context."""
         ReplayMode._replay_stack.append(ReplayMode._active_replay)
         ReplayMode._active_replay = self
@@ -449,10 +449,10 @@ class ReplayMode:
     @classmethod
     def from_json(
         cls,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         strict: bool = True,
         warn_on_divergence: bool = True,
-    ) -> "ReplayMode":
+    ) -> ReplayMode:
         """
         Create a ReplayMode from a JSON bundle downloaded from the console.
 
@@ -496,7 +496,7 @@ class ReplayMode:
             )
 
         run_id = data.get("run_id")
-        entries: List[ReplayEntry] = []
+        entries: list[ReplayEntry] = []
         for item in raw_entries:
             entry = ReplayEntry(
                 id=item.get("id", ""),
@@ -524,15 +524,15 @@ class ReplayMode:
         return cls._active_replay is not None
     
     @classmethod
-    def get_active(cls) -> Optional["ReplayMode"]:
+    def get_active(cls) -> ReplayMode | None:
         """Get the currently active replay mode, if any."""
         return cls._active_replay
 
 
 @contextmanager
 def replay_mode(
-    run_id: Optional[str] = None,
-    ledger_path: Optional[Path] = None,
+    run_id: str | None = None,
+    ledger_path: Path | None = None,
     strict: bool = True,
     warn_on_divergence: bool = True,
 ):

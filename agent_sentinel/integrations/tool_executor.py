@@ -11,7 +11,8 @@ import inspect
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
+from collections.abc import Callable
 
 from ..guard import guarded_action
 from ..errors import AgentSentinelError
@@ -19,7 +20,7 @@ from ..errors import AgentSentinelError
 logger = logging.getLogger("agent_sentinel.integrations.tool_executor")
 
 
-def _remediation_of(error: AgentSentinelError) -> Optional[dict]:
+def _remediation_of(error: AgentSentinelError) -> dict | None:
     """
     Build the blocked-action payload handed back to the model.
 
@@ -68,8 +69,8 @@ class ToolResult:
     tool_name: str
     output: Any = None
     blocked: bool = False
-    error: Optional[str] = None
-    remediation: Optional[dict] = None
+    error: str | None = None
+    remediation: dict | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -82,8 +83,8 @@ class ToolResult:
         }
 
 
-ToolConfig = Dict[str, Any]  # {produces_evidence, is_commit, requires, ...}
-ToolSpec = Tuple[Callable[..., Any], ToolConfig]
+ToolConfig = dict[str, Any]  # {produces_evidence, is_commit, requires, ...}
+ToolSpec = tuple[Callable[..., Any], ToolConfig]
 
 
 class SentinelToolExecutor:
@@ -103,16 +104,16 @@ class SentinelToolExecutor:
         result = executor.execute_tool("lookup_order", {"order_id": "123"}, tool_call_id="tc_1")
     """
 
-    def __init__(self, tools: Optional[Dict[str, ToolSpec]] = None):
-        self._tools: Dict[str, Callable] = {}
-        self._configs: Dict[str, ToolConfig] = {}
-        self._originals: Dict[str, Callable] = {}
+    def __init__(self, tools: dict[str, ToolSpec] | None = None):
+        self._tools: dict[str, Callable] = {}
+        self._configs: dict[str, ToolConfig] = {}
+        self._originals: dict[str, Callable] = {}
 
         if tools:
             for name, (func, config) in tools.items():
                 self.register(name, func, config)
 
-    def register(self, name: str, func: Callable, config: Optional[ToolConfig] = None) -> None:
+    def register(self, name: str, func: Callable, config: ToolConfig | None = None) -> None:
         """Register a tool function with enforcement config."""
         config = config or {}
         guarded_config = {
@@ -127,7 +128,7 @@ class SentinelToolExecutor:
     def execute_tool(
         self,
         name: str,
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
         tool_call_id: str = "",
     ) -> ToolResult:
         """
@@ -174,7 +175,7 @@ class SentinelToolExecutor:
     async def async_execute_tool(
         self,
         name: str,
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
         tool_call_id: str = "",
     ) -> ToolResult:
         """Async variant of execute_tool."""
@@ -211,10 +212,10 @@ class SentinelToolExecutor:
                 remediation=_remediation_of(e),
             )
 
-    def get_tool_names(self) -> List[str]:
+    def get_tool_names(self) -> list[str]:
         """Get list of registered tool names."""
         return list(self._tools.keys())
 
-    def get_tool_configs(self) -> Dict[str, ToolConfig]:
+    def get_tool_configs(self) -> dict[str, ToolConfig]:
         """Get registered tool configurations (for auto-registration)."""
         return dict(self._configs)

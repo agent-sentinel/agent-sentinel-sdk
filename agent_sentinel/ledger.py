@@ -17,7 +17,7 @@ import logging
 import datetime
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 # Constants
 # By default, we write to a hidden folder in the user's current directory.
@@ -74,7 +74,7 @@ class Ledger:
     - Recoverable (corrupted lines don't affect other entries)
     """
     _initialized = False
-    _log_path: Optional[Path] = None
+    _log_path: Path | None = None
 
     @classmethod
     def setup(cls):
@@ -127,19 +127,19 @@ class Ledger:
     def record(
         cls,
         action: str,
-        inputs: Dict[str, Any],
+        inputs: dict[str, Any],
         outputs: Any,
         cost_usd: float,
         duration_ms: float,
         outcome: str,
         tags: list[str],
-        compliance_metadata: Optional[Dict[str, Any]] = None,
-        agent_id: Optional[str] = None,
-        task_id: Optional[str] = None,
-        mission_id: Optional[str] = None,
-        run_id: Optional[str] = None,
+        compliance_metadata: dict[str, Any] | None = None,
+        agent_id: str | None = None,
+        task_id: str | None = None,
+        mission_id: str | None = None,
+        run_id: str | None = None,
         inputs_redacted: bool = False,
-        impact: Optional[str] = None,
+        impact: str | None = None,
     ):
         """
         Appends a structured log entry to the local JSONL file.
@@ -181,7 +181,7 @@ class Ledger:
         # Build the ledger entry with all metadata
         entry = {
             "id": str(uuid.uuid4()),
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
             "action": action,
             "cost_usd": cost_usd,
             "duration_ms": round(duration_ms, 3),
@@ -231,8 +231,8 @@ class Ledger:
         status: str,
         cost_usd: float,
         duration_ns: int,
-        metadata: Optional[Dict[str, Any]] = None,
-        tags: Optional[list[str]] = None,
+        metadata: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         """
         Simplified logging interface for integrations.
@@ -273,7 +273,7 @@ class Ledger:
         )
     
     @classmethod
-    def get_log_path(cls) -> Optional[Path]:
+    def get_log_path(cls) -> Path | None:
         """
         Get the current log file path.
         

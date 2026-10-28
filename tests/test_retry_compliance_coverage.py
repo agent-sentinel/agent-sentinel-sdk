@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 import time
 from unittest.mock import Mock, patch, MagicMock
-from typing import Any
 
 from agent_sentinel.errors import AgentSentinelError, NetworkError, SyncError, TimeoutError
 

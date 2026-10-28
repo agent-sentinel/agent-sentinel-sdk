@@ -13,10 +13,10 @@ import asyncio
 import logging
 import time
 import threading
-from typing import Optional, Any, Dict
+from typing import Any
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 
 from .context import build_identity_headers
 from .errors import PolicyViolationError, TimeoutError, NetworkError, ConfigurationError
@@ -33,7 +33,7 @@ except ImportError:
     logger.debug("httpx not installed. Remote approval disabled.")
 
 
-class ApprovalStatus(str, Enum):
+class ApprovalStatus(StrEnum):
     """Status of an approval request."""
     PENDING = "pending"
     APPROVED = "approved"
@@ -43,7 +43,7 @@ class ApprovalStatus(str, Enum):
     INFO_REQUESTED = "info_requested"
 
 
-class ApprovalPriority(str, Enum):
+class ApprovalPriority(StrEnum):
     """Priority level for approval requests."""
     LOW = "low"
     MEDIUM = "medium"
@@ -51,7 +51,7 @@ class ApprovalPriority(str, Enum):
     CRITICAL = "critical"
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     """Risk assessment level for the action."""
     MINIMAL = "minimal"
     LOW = "low"
@@ -73,11 +73,11 @@ class ApprovalRequest:
     risk_level: RiskLevel = RiskLevel.MEDIUM
     priority: ApprovalPriority = ApprovalPriority.MEDIUM
     timeout_seconds: int = 3600
-    action_inputs: Dict[str, Any] | None = None
-    context: Dict[str, Any] | None = None
+    action_inputs: dict[str, Any] | None = None
+    context: dict[str, Any] | None = None
     callback_url: str | None = None
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API request."""
         # Avoid asdict() because it performs deepcopy which fails on locks
         return {
@@ -108,7 +108,7 @@ class ApprovalResponse:
     info_request_message: str | None = None
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ApprovalResponse":
+    def from_dict(cls, data: dict[str, Any]) -> ApprovalResponse:
         """Create from API response dictionary."""
         status = ApprovalStatus(data.get("status", "pending"))
         decided_at = None
@@ -133,12 +133,12 @@ class ApprovalConfig:
     AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL) and ``api_token`` to
     AGENT_SENTINEL_API_KEY.
     """
-    platform_url: Optional[str] = None
-    api_token: Optional[str] = None
+    platform_url: str | None = None
+    api_token: str | None = None
     poll_interval: float = 5.0  # Seconds between polls
     default_timeout: int = 3600  # Default timeout in seconds
     enabled: bool = True
-    info_request_handler: Optional[Any] = None  # Callable[[str], Optional[str]] or async version
+    info_request_handler: Any | None = None  # Callable[[str], Optional[str]] or async version
 
     def __post_init__(self) -> None:
         self.platform_url = resolve_platform_url(self.platform_url)
@@ -169,18 +169,18 @@ class ApprovalClient:
             pass
     """
     
-    _config: Optional[ApprovalConfig] = None
+    _config: ApprovalConfig | None = None
     _lock = threading.Lock()
     
     @classmethod
     def configure(
         cls,
-        platform_url: Optional[str] = None,
-        api_token: Optional[str] = None,
+        platform_url: str | None = None,
+        api_token: str | None = None,
         poll_interval: float = 5.0,
         default_timeout: int = 3600,
         enabled: bool = True,
-        info_request_handler: Optional[Any] = None,
+        info_request_handler: Any | None = None,
     ) -> None:
         """
         Configure the approval client.
@@ -218,9 +218,9 @@ class ApprovalClient:
         cls,
         action_name: str,
         cost_usd: float = 0.0,
-        agent_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        agent_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any] | None:
         """
         Check if an action requires approval (pre-flight check).
         
@@ -488,8 +488,8 @@ class ApprovalClient:
         risk_level: RiskLevel = RiskLevel.MEDIUM,
         priority: ApprovalPriority = ApprovalPriority.MEDIUM,
         timeout_seconds: int | None = None,
-        action_inputs: Dict[str, Any] | None = None,
-        context: Dict[str, Any] | None = None,
+        action_inputs: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> ApprovalResponse:
         """
         Request approval and block until decision is made.
@@ -631,8 +631,8 @@ class ApprovalClient:
         risk_level: RiskLevel = RiskLevel.MEDIUM,
         priority: ApprovalPriority = ApprovalPriority.MEDIUM,
         timeout_seconds: int | None = None,
-        action_inputs: Dict[str, Any] | None = None,
-        context: Dict[str, Any] | None = None,
+        action_inputs: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> ApprovalResponse:
         """
         Request approval asynchronously.

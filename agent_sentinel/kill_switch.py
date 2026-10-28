@@ -11,7 +11,6 @@ from __future__ import annotations
 import time
 import logging
 import threading
-from typing import Optional, Dict
 from dataclasses import dataclass
 
 from .context import build_identity_headers
@@ -35,8 +34,8 @@ class KillSwitchConfig:
     AGENT_SENTINEL_PLATFORM_URL / AGENT_SENTINEL_URL) and ``api_token`` to
     AGENT_SENTINEL_API_KEY.
     """
-    platform_url: Optional[str] = None
-    api_token: Optional[str] = None
+    platform_url: str | None = None
+    api_token: str | None = None
     cache_ttl: float = 5.0  # seconds to cache kill switch state
     enabled: bool = True
 
@@ -64,15 +63,15 @@ class KillSwitchClient:
         KillSwitchClient.check_or_raise(agent_id="writer-1")
     """
 
-    _config: Optional[KillSwitchConfig] = None
-    _cache: Dict[str, tuple[bool, float]] = {}  # key -> (is_killed, expires_at)
+    _config: KillSwitchConfig | None = None
+    _cache: dict[str, tuple[bool, float]] = {}  # key -> (is_killed, expires_at)
     _lock = threading.Lock()
 
     @classmethod
     def configure(
         cls,
-        platform_url: Optional[str] = None,
-        api_token: Optional[str] = None,
+        platform_url: str | None = None,
+        api_token: str | None = None,
         cache_ttl: float = 5.0,
         enabled: bool = True,
     ) -> None:
@@ -197,9 +196,9 @@ class KillSwitchClient:
     @classmethod
     def check_or_raise(
         cls,
-        agent_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-        mission_id: Optional[str] = None,
+        agent_id: str | None = None,
+        run_id: str | None = None,
+        mission_id: str | None = None,
         fail_closed: bool = False,
     ) -> None:
         """

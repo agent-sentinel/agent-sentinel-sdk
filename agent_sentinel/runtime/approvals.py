@@ -19,7 +19,7 @@ import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import httpx
@@ -87,7 +87,7 @@ def _error_result(text: str) -> types.CallToolResult:
     )
 
 
-def _approval_id(result: types.CallToolResult) -> Optional[str]:
+def _approval_id(result: types.CallToolResult) -> str | None:
     """The canonical approval id of a ``require_approval`` result, else None."""
     structured = result.structuredContent
     if not isinstance(structured, dict):
@@ -115,9 +115,9 @@ class ApprovalWaiter:
         base_url: str,
         approvals: ApprovalsConfig,
         *,
-        http_transport: Optional[httpx.AsyncBaseTransport] = None,
-        sleep: Optional[Callable[[float], Awaitable[Any]]] = None,
-        clock: Optional[Callable[[], float]] = None,
+        http_transport: httpx.AsyncBaseTransport | None = None,
+        sleep: Callable[[float], Awaitable[Any]] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._proxy_config = proxy_config
         self._base_url = base_url.rstrip("/")
@@ -174,7 +174,7 @@ class ApprovalWaiter:
             text += f": {notes}"
         return _error_result(f"{text} (approval {approval_id})")
 
-    def _redact(self, value: Optional[str], approver_email: Optional[str]) -> Optional[str]:
+    def _redact(self, value: str | None, approver_email: str | None) -> str | None:
         """Approver free text, with any part of the key and any email address replaced."""
         if not value:
             return None
@@ -185,7 +185,7 @@ class ApprovalWaiter:
         value = _EMAIL.sub(_REDACTED, value)
         return _scrub_key(value, self._proxy_config.api_key)
 
-    async def _wait(self, approval_id: str) -> Optional[dict[str, Any]]:
+    async def _wait(self, approval_id: str) -> dict[str, Any] | None:
         """Poll until a non-pending status (its body) or the timeout (None).
 
         Polls once straight away, then every interval. Nothing is accepted

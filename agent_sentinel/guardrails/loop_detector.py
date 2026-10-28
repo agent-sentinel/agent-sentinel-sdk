@@ -25,10 +25,11 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
+from typing import Any
+from collections.abc import Iterable
 
 
-def _arg_hash(kwargs: Optional[Dict[str, Any]]) -> str:
+def _arg_hash(kwargs: dict[str, Any] | None) -> str:
     """Deterministic hash of kwargs for loop-equality comparison."""
     if not kwargs:
         return "∅"
@@ -64,10 +65,10 @@ class LoopDetection:
     window_seconds: float
     first_seen_at: float
     last_seen_at: float
-    recent_args: List[Dict[str, Any]] = field(default_factory=list)
+    recent_args: list[dict[str, Any]] = field(default_factory=list)
     break_out_hint: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "action": self.action,
             "arg_hash": self.arg_hash,
@@ -90,7 +91,7 @@ class LoopGuard:
 
     def __init__(self, max_history: int = 32) -> None:
         self._max_history = max_history
-        self._state: Dict[Tuple[str, str], Deque[Tuple[float, Dict[str, Any]]]] = {}
+        self._state: dict[tuple[str, str], deque[tuple[float, dict[str, Any]]]] = {}
         self._lock = threading.Lock()
 
     def reset(self) -> None:
@@ -100,9 +101,9 @@ class LoopGuard:
     def record_and_check(
         self,
         action: str,
-        kwargs: Optional[Dict[str, Any]],
+        kwargs: dict[str, Any] | None,
         rule: LoopRule,
-    ) -> Optional[LoopDetection]:
+    ) -> LoopDetection | None:
         """
         Record an attempted call and return a LoopDetection if the rule's
         threshold is exceeded in the sliding window. Otherwise returns None.
@@ -144,9 +145,9 @@ class LoopGuard:
 
     @staticmethod
     def _strip(
-        kwargs: Optional[Dict[str, Any]],
+        kwargs: dict[str, Any] | None,
         exclude: Iterable[str],
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not kwargs:
             return {}
         excl = set(exclude)

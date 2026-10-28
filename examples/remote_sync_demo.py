@@ -172,7 +172,7 @@ async def main():
     # Check local ledger
     ledger_path = Path(".agent-sentinel/ledger.jsonl")
     if ledger_path.exists():
-        with open(ledger_path, "r") as f:
+        with open(ledger_path) as f:
             lines = len(f.readlines())
         print(f"📁 Local ledger: {lines} entries in {ledger_path}")
     print()

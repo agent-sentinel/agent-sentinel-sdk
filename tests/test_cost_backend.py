@@ -332,20 +332,30 @@ class TestAtomicReservationHoldsTheCap:
 
     RACER = (
         "import sys, time\n"
+        "from pathlib import Path\n"
         "from agent_sentinel.cost import CostTracker\n"
         "from agent_sentinel.cost_backend import FileCostBackend\n"
         "from agent_sentinel.policy import PolicyEngine\n"
         "from agent_sentinel.errors import BudgetExceededError\n"
-        "path, mode, barrier = sys.argv[1], sys.argv[2], float(sys.argv[3])\n"
+        "path, mode, sync_dir, worker, workers = sys.argv[1:]\n"
+        "sync_dir = Path(sync_dir)\n"
+        "def wait_for(predicate):\n"
+        "    deadline = time.monotonic() + 30\n"
+        "    while not predicate():\n"
+        "        if time.monotonic() >= deadline:\n"
+        "            raise TimeoutError('process barrier timed out')\n"
+        "        time.sleep(0.01)\n"
         "CostTracker.set_backend(FileCostBackend(path))\n"
         "PolicyEngine.configure(run_budget=1.00)\n"
-        "time.sleep(max(0.0, barrier - time.time()))\n"
+        "(sync_dir / ('ready-' + worker)).touch()\n"
+        "wait_for(lambda: (sync_dir / 'go').exists())\n"
         "try:\n"
         "    if mode == 'reserve':\n"
         "        PolicyEngine.check_and_reserve('t', 0.50)\n"
         "    else:\n"
         "        PolicyEngine.check_action('t', 0.50)\n"
-        "        time.sleep(0.05)\n"
+        "        (sync_dir / ('checked-' + worker)).touch()\n"
+        "        wait_for(lambda: len(list(sync_dir.glob('checked-*'))) == int(workers))\n"
         "        CostTracker.add_cost('t', 0.50)\n"
         "except BudgetExceededError:\n"
         "    pass\n"
@@ -360,15 +370,22 @@ class TestAtomicReservationHoldsTheCap:
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env = dict(os.environ, PYTHONPATH=repo_root)
 
-        barrier = str(_time.time() + 1.0)
+        sync_dir = tmp_path / f"sync-{mode}"
+        sync_dir.mkdir()
         procs = [
             subprocess.Popen(
-                [sys.executable, str(script), str(path), mode, barrier],
+                [sys.executable, str(script), str(path), mode, str(sync_dir), str(worker), str(workers)],
                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
-            for _ in range(workers)
+            for worker in range(workers)
         ]
         try:
+            deadline = _time.monotonic() + 30
+            while len(list(sync_dir.glob("ready-*"))) != workers:
+                assert all(proc.poll() is None for proc in procs), "worker exited before barrier"
+                assert _time.monotonic() < deadline, "workers did not reach ready barrier"
+                _time.sleep(0.01)
+            (sync_dir / "go").touch()
             for proc in procs:
                 _, err = proc.communicate(timeout=60)
                 assert proc.returncode == 0, err.decode()

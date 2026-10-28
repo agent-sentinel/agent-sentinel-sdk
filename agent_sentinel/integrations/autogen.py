@@ -58,7 +58,8 @@ from __future__ import annotations
 import logging
 import time
 import functools
-from typing import Any, Dict, List, Optional, Union, Callable
+from typing import Any
+from collections.abc import Callable
 from collections import defaultdict
 
 from ..cost import CostTracker
@@ -126,7 +127,7 @@ class SentinelInspector:
         track_costs: bool = True,
         track_messages: bool = True,
         auto_log: bool = True,
-        tags: Optional[List[str]] = None,
+        tags: list[str] | None = None,
     ):
         """Initialize the Sentinel Inspector."""
         if not _AUTOGEN_AVAILABLE:
@@ -143,17 +144,17 @@ class SentinelInspector:
         self.tags = tags or ["autogen"]
         
         # Track execution state
-        self._run_start_time: Optional[float] = None
+        self._run_start_time: float | None = None
         self._run_start_cost: float = 0.0
-        self._registered_agents: List[str] = []
+        self._registered_agents: list[str] = []
         
         # Message flow tracking
         self._message_count: int = 0
-        self._agent_message_counts: Dict[str, int] = defaultdict(int)
+        self._agent_message_counts: dict[str, int] = defaultdict(int)
         
         # LLM call tracking
         self._llm_call_count: int = 0
-        self._original_llm_configs: Dict[str, Dict[str, Any]] = {}
+        self._original_llm_configs: dict[str, dict[str, Any]] = {}
         
         logger.info(
             f"SentinelInspector initialized: {self.run_name} | "
@@ -202,10 +203,10 @@ class SentinelInspector:
         """
         def authorization_hook(
             recipient: ConversableAgent,
-            messages: Optional[List[Dict]] = None,
-            sender: Optional[Agent] = None,
-            config: Optional[Any] = None,
-        ) -> Union[str, Dict, None]:
+            messages: list[dict] | None = None,
+            sender: Agent | None = None,
+            config: Any | None = None,
+        ) -> str | dict | None:
             """
             The "Visa Authorization" check.
             
@@ -315,10 +316,10 @@ class SentinelInspector:
         
         @functools.wraps(original_generate)
         def wrapped_generate(
-            messages: Optional[List[Dict]] = None,
-            sender: Optional[Agent] = None,
-            config: Optional[Any] = None,
-        ) -> tuple[bool, Optional[str]]:
+            messages: list[dict] | None = None,
+            sender: Agent | None = None,
+            config: Any | None = None,
+        ) -> tuple[bool, str | None]:
             """Wrapped generate that tracks costs."""
             start_time = time.perf_counter()
             
@@ -455,7 +456,7 @@ class SentinelInspector:
             f"Messages: {self._message_count} | LLM Calls: {self._llm_call_count}"
         )
     
-    def get_run_summary(self) -> Dict[str, Any]:
+    def get_run_summary(self) -> dict[str, Any]:
         """
         Get a summary of the current run.
         
@@ -484,10 +485,10 @@ class SentinelInspector:
 
 
 def wrap_autogen_config(
-    config_list: List[Dict[str, Any]],
+    config_list: list[dict[str, Any]],
     run_name: str,
     enforce_policies: bool = True,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Wrap AutoGen config_list to add Sentinel tracking.
     
@@ -530,11 +531,11 @@ def wrap_autogen_config(
 
 
 def create_sentinel_agents(
-    agent_configs: List[Dict[str, Any]],
+    agent_configs: list[dict[str, Any]],
     run_name: str,
     enforce_policies: bool = True,
     **sentinel_kwargs: Any,
-) -> tuple[List[ConversableAgent], SentinelInspector]:
+) -> tuple[list[ConversableAgent], SentinelInspector]:
     """
     Create AutoGen agents with Sentinel already registered.
     

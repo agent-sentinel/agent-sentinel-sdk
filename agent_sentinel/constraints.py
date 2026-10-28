@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger("agent_sentinel")
 
-_TYPE_MAP: Dict[str, tuple[type, ...]] = {
+_TYPE_MAP: dict[str, tuple[type, ...]] = {
     "string": (str,),
     "number": (int, float),
     "integer": (int,),
@@ -23,9 +23,9 @@ _TYPE_MAP: Dict[str, tuple[type, ...]] = {
 
 
 def validate_constraints(
-    kwargs: Optional[Dict[str, Any]],
-    constraints: Dict[str, Any],
-) -> List[str]:
+    kwargs: dict[str, Any] | None,
+    constraints: dict[str, Any],
+) -> list[str]:
     """
     Validate action kwargs against a JSON-Schema-like constraint dict.
 
@@ -39,7 +39,7 @@ def validate_constraints(
     if not constraints or not kwargs:
         return []
 
-    violations: List[str] = []
+    violations: list[str] = []
 
     # Check required fields
     required = constraints.get("required", [])
@@ -63,10 +63,10 @@ def validate_constraints(
 def _validate_field(
     field_name: str,
     value: Any,
-    constraints: Dict[str, Any],
-) -> List[str]:
+    constraints: dict[str, Any],
+) -> list[str]:
     """Validate a single field value against its constraints."""
-    violations: List[str] = []
+    violations: list[str] = []
 
     # Type check
     expected_type = constraints.get("type")

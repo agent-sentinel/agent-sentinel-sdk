@@ -32,7 +32,7 @@ import time
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from ._defaults import resolve_api_token, resolve_platform_url
 
@@ -66,8 +66,8 @@ class CostSnapshot:
 
     session_total: float = 0.0
     run_total: float = 0.0
-    action_counts: Dict[str, int] = field(default_factory=dict)
-    action_costs: Dict[str, float] = field(default_factory=dict)
+    action_counts: dict[str, int] = field(default_factory=dict)
+    action_costs: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -78,7 +78,7 @@ class CostSnapshot:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "CostSnapshot":
+    def from_dict(cls, data: dict) -> CostSnapshot:
         return cls(
             session_total=float(data.get("session_total", 0.0)),
             run_total=float(data.get("run_total", 0.0)),
@@ -108,10 +108,10 @@ class CostBackend(Protocol):
         self,
         action: str,
         cost_usd: float,
-        session_budget: Optional[float] = None,
-        run_budget: Optional[float] = None,
-        action_budget: Optional[float] = None,
-    ) -> Optional[BudgetRejection]: ...
+        session_budget: float | None = None,
+        run_budget: float | None = None,
+        action_budget: float | None = None,
+    ) -> BudgetRejection | None: ...
 
 
 @dataclass
@@ -127,10 +127,10 @@ def _evaluate_budgets(
     snapshot: CostSnapshot,
     action: str,
     cost_usd: float,
-    session_budget: Optional[float],
-    run_budget: Optional[float],
-    action_budget: Optional[float],
-) -> Optional[BudgetRejection]:
+    session_budget: float | None,
+    run_budget: float | None,
+    action_budget: float | None,
+) -> BudgetRejection | None:
     """
     Check a proposed spend against every configured budget.
 
@@ -209,10 +209,10 @@ class InMemoryCostBackend:
         self,
         action: str,
         cost_usd: float,
-        session_budget: Optional[float] = None,
-        run_budget: Optional[float] = None,
-        action_budget: Optional[float] = None,
-    ) -> Optional[BudgetRejection]:
+        session_budget: float | None = None,
+        run_budget: float | None = None,
+        action_budget: float | None = None,
+    ) -> BudgetRejection | None:
         """
         Check every budget and record the spend, atomically.
 
@@ -272,7 +272,7 @@ class FileCostBackend:
     """
 
     def __init__(
-        self, path: "os.PathLike[str] | str", timeout: Optional[float] = 5.0
+        self, path: os.PathLike[str] | str, timeout: float | None = 5.0
     ) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -437,10 +437,10 @@ class FileCostBackend:
         self,
         action: str,
         cost_usd: float,
-        session_budget: Optional[float] = None,
-        run_budget: Optional[float] = None,
-        action_budget: Optional[float] = None,
-    ) -> Optional[BudgetRejection]:
+        session_budget: float | None = None,
+        run_budget: float | None = None,
+        action_budget: float | None = None,
+    ) -> BudgetRejection | None:
         """
         Check every budget and record the spend inside a single lock hold.
 
@@ -453,7 +453,7 @@ class FileCostBackend:
         Returns None when the spend was permitted and recorded, or a
         BudgetRejection naming the refusing budget (nothing recorded).
         """
-        outcome: list[Optional[BudgetRejection]] = [None]
+        outcome: list[BudgetRejection | None] = [None]
 
         def mutate(snapshot: CostSnapshot) -> None:
             rejection = _evaluate_budgets(
@@ -530,8 +530,8 @@ class RemoteCostBackend:
 
     def __init__(
         self,
-        platform_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        platform_url: str | None = None,
+        api_key: str | None = None,
         timeout: float = 5.0,
     ) -> None:
         self._platform_url = resolve_platform_url(platform_url)
@@ -555,10 +555,10 @@ class RemoteCostBackend:
         self,
         action: str,
         cost_usd: float,
-        session_budget: Optional[float] = None,
-        run_budget: Optional[float] = None,
-        action_budget: Optional[float] = None,
-    ) -> Optional[BudgetRejection]:
+        session_budget: float | None = None,
+        run_budget: float | None = None,
+        action_budget: float | None = None,
+    ) -> BudgetRejection | None:
         """
         Reserve ``cost_usd`` against the platform's org/group budgets.
 
@@ -581,7 +581,7 @@ class RemoteCostBackend:
         url = f"{self._platform_url}/api/v1/budgets/reserve"
         headers = build_identity_headers(self._api_key)
         headers["Content-Type"] = "application/json"
-        payload: Dict[str, object] = {
+        payload: dict[str, object] = {
             "action_name": action,
             "estimated_cost_usd": cost_usd,
         }
@@ -603,7 +603,7 @@ class RemoteCostBackend:
             return None
 
         if response.status_code == 402:
-            detail: Dict[str, object] = {}
+            detail: dict[str, object] = {}
             try:
                 detail = response.json().get("detail") or {}
             except Exception:  # noqa: BLE001 - malformed body, fall back below
@@ -622,7 +622,7 @@ class RemoteCostBackend:
 
     def _handle_unreachable(
         self, action: str, cost_usd: float, exc: Exception
-    ) -> Optional[BudgetRejection]:
+    ) -> BudgetRejection | None:
         """
         Resolve a reservation call that could not be completed at all.
 
@@ -651,7 +651,7 @@ class RemoteCostBackend:
         return None
 
 
-def backend_from_env() -> Optional[CostBackend]:
+def backend_from_env() -> CostBackend | None:
     """
     Build a backend from environment variables, or None to keep the default.
 
